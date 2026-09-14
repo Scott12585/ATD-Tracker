@@ -14,101 +14,23 @@
 <body>
   <main class="shell">
     <section id="authView" class="auth-card">
-      <div class="brand-mark">🏈</div>
-      <h1>ATD Tracker</h1>
-      <p class="muted">NFL anytime touchdown betting tracker</p>
-      <form id="authForm" class="stack">
-        <label>Email<input id="email" type="email" autocomplete="email" required /></label>
-        <label>Password<input id="password" type="password" autocomplete="current-password" minlength="6" required /></label>
-        <button id="loginBtn" type="submit" class="primary">Sign In</button>
-        <button id="signupBtn" type="button" class="ghost">Create Account</button>
-      </form>
-      <p id="authMessage" class="message"></p>
+      <div class="brand-mark">🏈</div><h1>ATD Tracker</h1><p class="muted">NFL anytime touchdown betting tracker</p>
+      <form id="authForm" class="stack"><label>Email<input id="email" type="email" autocomplete="email" required /></label><label>Password<input id="password" type="password" autocomplete="current-password" minlength="6" required /></label><button id="loginBtn" type="submit" class="primary">Sign In</button><button id="signupBtn" type="button" class="ghost">Create Account</button></form><p id="authMessage" class="message"></p>
     </section>
-
     <section id="appView" class="hidden">
-      <header class="app-header">
-        <div>
-          <p class="eyebrow">NFL Anytime Touchdown</p>
-          <h1>ATD Tracker</h1>
-        </div>
-        <button id="signOutBtn" class="icon-btn" aria-label="Sign out">↪</button>
-      </header>
-
-      <nav class="tabs" aria-label="Primary">
-        <button class="tab active" data-view="dashboard">Dashboard</button>
-        <button class="tab" data-view="bets">Bets</button>
-        <button class="tab" data-view="settings">Settings</button>
-      </nav>
-
-      <section id="dashboardView" class="view active-view">
-        <div class="section-row">
-          <div>
-            <p class="eyebrow">Season Overview</p>
-            <h2>Performance</h2>
-          </div>
-          <select id="weekFilter" class="compact-select" aria-label="Filter by week"></select>
-        </div>
-
-        <div class="stat-grid">
-          <article class="stat"><span>Bets</span><strong id="statBets">0</strong></article>
-          <article class="stat"><span>Record</span><strong id="statRecord">0-0</strong></article>
-          <article class="stat"><span>Staked</span><strong id="statStaked">$0.00</strong></article>
-          <article class="stat"><span>Profit / Loss</span><strong id="statPL">$0.00</strong></article>
-          <article class="stat"><span>ROI</span><strong id="statROI">0.0%</strong></article>
-          <article class="stat"><span>Pending</span><strong id="statPending">0</strong></article>
-        </div>
-
-        <div class="section-row top-gap">
-          <h2>Recent Bets</h2>
-          <button id="refreshBtn" class="ghost small">Refresh Live</button>
-        </div>
-        <div id="recentBets" class="bet-list"></div>
-      </section>
-
+      <header class="app-header"><div><p class="eyebrow">NFL Anytime Touchdown</p><h1>ATD Tracker</h1></div><button id="signOutBtn" class="icon-btn" aria-label="Sign out">↪</button></header>
+      <nav class="tabs" aria-label="Primary"><button class="tab active" data-view="dashboard">Dashboard</button><button class="tab" data-view="bets">Bets</button><button class="tab" data-view="settings">Settings</button></nav>
+      <section id="dashboardView" class="view active-view"><div class="section-row"><div><p class="eyebrow">Season Overview</p><h2>Performance</h2></div><select id="weekFilter" class="compact-select" aria-label="Filter by week"></select></div><div class="stat-grid"><article class="stat"><span>Bets</span><strong id="statBets">0</strong></article><article class="stat"><span>Record</span><strong id="statRecord">0-0</strong></article><article class="stat"><span>Staked</span><strong id="statStaked">$0.00</strong></article><article class="stat"><span>Profit / Loss</span><strong id="statPL">$0.00</strong></article><article class="stat"><span>ROI</span><strong id="statROI">0.0%</strong></article><article class="stat"><span>Pending</span><strong id="statPending">0</strong></article></div><div class="section-row top-gap"><h2>Recent Bets</h2><button id="refreshBtn" class="ghost small">Refresh Live</button></div><div id="recentBets" class="bet-list"></div></section>
       <section id="betsView" class="view hidden">
-        <div class="card add-card">
-          <p class="eyebrow">Quick Add</p>
-          <h2>Add Anytime TD Bet</h2>
-          <form id="betForm" class="stack">
-            <div class="two-col">
-              <label>Week<select id="betWeek" required></select></label>
-              <label>Odds<input id="betOdds" type="number" inputmode="numeric" placeholder="+180" required /></label>
-            </div>
-
-            <label class="player-field">Player
-              <input id="playerInput" type="search" autocomplete="off" placeholder="Start typing a player…" required />
-              <div id="playerResults" class="search-results hidden"></div>
-            </label>
-
-            <div id="selectedPlayer" class="selected-player hidden"></div>
-            <button id="addBetBtn" type="submit" class="primary">Add Bet</button>
-            <p id="betMessage" class="message"></p>
-          </form>
-        </div>
-
-        <div class="section-row top-gap">
-          <h2>All Bets</h2>
-          <span id="betCount" class="muted"></span>
-        </div>
-        <div id="allBets" class="bet-list"></div>
+        <div class="card add-card"><p class="eyebrow">Quick Add</p><h2>Add Anytime TD Bet</h2><form id="betForm" class="stack">
+          <div class="two-col"><label>Week<select id="betWeek" required></select></label><label>Odds<input id="betOdds" type="number" inputmode="numeric" placeholder="+180" required /></label></div>
+          <label class="player-field">Player<input id="playerInput" type="search" autocomplete="off" placeholder="Start typing a player…" required /><div id="playerResults" class="search-results hidden"></div></label>
+          <label>Stake <span class="muted">(optional override)</span><input id="betStake" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="Uses default stake" /></label>
+          <div id="selectedPlayer" class="selected-player hidden"></div><button id="addBetBtn" type="submit" class="primary">Add Bet</button><p id="betMessage" class="message"></p>
+        </form></div>
+        <div class="section-row top-gap"><h2>All Bets</h2><span id="betCount" class="muted"></span></div><div id="allBets" class="bet-list"></div>
       </section>
-
-      <section id="settingsView" class="view hidden">
-        <div class="card">
-          <p class="eyebrow">Defaults</p>
-          <h2>Tracker Settings</h2>
-          <form id="settingsForm" class="stack">
-            <label>Default Stake<input id="defaultStake" type="number" min="0.01" step="0.01" inputmode="decimal" required /></label>
-            <label>Season<input id="season" type="number" min="2020" max="2100" required /></label>
-            <button class="primary" type="submit">Save Settings</button>
-            <p id="settingsMessage" class="message"></p>
-          </form>
-        </div>
-      </section>
+      <section id="settingsView" class="view hidden"><div class="card"><p class="eyebrow">Defaults</p><h2>Tracker Settings</h2><form id="settingsForm" class="stack"><label>Default Stake<input id="defaultStake" type="number" min="0.01" step="0.01" inputmode="decimal" required /></label><label>Season<input id="season" type="number" min="2020" max="2100" required /></label><button class="primary" type="submit">Save Settings</button><p id="settingsMessage" class="message"></p></form></div></section>
     </section>
-  </main>
-
-  <script type="module" src="app.js"></script>
-</body>
-</html>
+  </main><script type="module" src="app.js"></script>
+</body></html>
