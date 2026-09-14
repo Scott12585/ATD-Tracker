@@ -1,0 +1,9 @@
+{
+  "name": "ATD Tracker",
+  "short_name": "ATD Tracker",
+  "description": "NFL anytime touchdown betting tracker",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f4f7fb",
+  "theme_color": "#0f172a"
+}
