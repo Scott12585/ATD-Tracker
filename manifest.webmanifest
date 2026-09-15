@@ -4,6 +4,14 @@
   "description": "NFL anytime touchdown betting tracker",
   "start_url": "./",
   "display": "standalone",
-  "background_color": "#f4f7fb",
-  "theme_color": "#0f172a"
+  "background_color": "#f5f1e8",
+  "theme_color": "#0c4268",
+  "icons": [
+    {
+      "src": "https://uinhyjqsqrgfczqrmcya.supabase.co/functions/v1/atd-app-icon",
+      "sizes": "180x180",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ]
 }
