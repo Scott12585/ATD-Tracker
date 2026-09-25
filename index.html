@@ -20,4 +20,28 @@ window.atdForgotPassword=async function(){
   }catch(err){msg.textContent=err.message;alert(err.message);}
   finally{btn.disabled=false;btn.textContent='Forgot Password?';}
 };
-</script><script type="module" src="app.js?v=23"></script><script type="module" src="dashboard.js?v=4"></script></body></html>
+</script><script type="module" src="app.js?v=24"></script><script type="module" src="dashboard.js?v=4"></script><script>
+window.atdDirectSignIn=async function(){
+  const btn=document.getElementById('loginBtn'),msg=document.getElementById('authMessage');
+  const email=document.getElementById('email').value.trim(),password=document.getElementById('password').value;
+  if(!email||!password){msg.textContent='Enter your email and password.';return;}
+  btn.disabled=true;btn.textContent='Signing in…';msg.textContent='';
+  try{
+    const res=await fetch('https://uinhyjqsqrgfczqrmcya.supabase.co/auth/v1/token?grant_type=password',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','apikey':'sb_publishable_qmrBMbSlLInIYT2IXwy49Q_WnMiToQJ'},
+      body:JSON.stringify({email,password})
+    });
+    const data=await res.json();
+    if(!res.ok)throw new Error(data.msg||data.message||data.error_description||'Sign in failed.');
+    const storageKey='sb-uinhyjqsqrgfczqrmcya-auth-token';
+    localStorage.setItem(storageKey,JSON.stringify(data));
+    msg.textContent='Signed in. Opening tracker…';
+    location.reload();
+  }catch(e){msg.textContent=e.message||'Sign in failed.';btn.disabled=false;btn.textContent='Sign In';}
+};
+document.addEventListener('DOMContentLoaded',()=>{
+ const b=document.getElementById('loginBtn');
+ if(b){const clone=b.cloneNode(true);b.replaceWith(clone);clone.addEventListener('click',window.atdDirectSignIn);}
+});
+</script></body></html>
