@@ -1,4 +1,4 @@
-const createClient=window.supabase?.createClient;
+const createClient=window.supabase && window.supabase.createClient;
 if(!createClient)throw new Error('Supabase library failed to load.');
 const SUPABASE_URL='https://uinhyjqsqrgfczqrmcya.supabase.co';
 const SUPABASE_KEY='sb_publishable_qmrBMbSlLInIYT2IXwy49Q_WnMiToQJ';
