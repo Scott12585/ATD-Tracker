@@ -2,7 +2,7 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 const SUPABASE_URL='https://uinhyjqsqrgfczqrmcya.supabase.co';
 const SUPABASE_KEY='sb_publishable_qmrBMbSlLInIYT2IXwy49Q_WnMiToQJ';
 const VAPID_PUBLIC_KEY='BJRhrsTFFybj-5P4yPXxjGRMuiukrdE1ywD9cVaGXv6H7kAyCBU6bF4sP6LXozkyjmQXyJ51FWSM2exqAjPSl_s';
-const supabase=createClient(SUPABASE_URL,SUPABASE_KEY,{auth:{persistSession:true,autoRefreshToken:true}});
+const supabase=createClient(SUPABASE_URL,SUPABASE_KEY,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});\nwindow.atdSupabase=supabase;
 const $=id=>document.getElementById(id);
 const state={user:null,settings:null,bets:[],selectedPlayer:null,searchTimer:null};
 const authView=$('authView'),appView=$('appView'),authForm=$('authForm'),authMessage=$('authMessage'),betForm=$('betForm'),playerInput=$('playerInput'),playerResults=$('playerResults'),selectedPlayerBox=$('selectedPlayer'),betMessage=$('betMessage');
