@@ -1,54 +1,12 @@
 (function(){
-  const $=id=>document.getElementById(id);
-  const profit=(stake,odds)=>Number(odds)>0?Number(stake||0)*Number(odds)/100:Number(stake||0)*100/Math.abs(Number(odds)||1);
-  const money=v=>new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(Number(v||0));
-  const odds=v=>{const n=Number(v);return Number.isFinite(n)?`${n>0?'+':''}${n}`:''};
-  const dt=v=>v?new Intl.DateTimeFormat('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit',timeZone:'America/New_York'}).format(new Date(v)):'—';
-  function prop(b){const t=String(b.bet_type||'point').toLowerCase(),n=t==='goal'?'Goal':t==='assist'?'Assist':'Point',x=Number(b.stat_target||1);return `${x}+ ${n}${x>1?'s':''}`}
-  async function refreshHockeyBet(b){
-    const client=window.atdSupabase;
-    if(!client)throw new Error('Tracker connection is not ready.');
-    const {data,error}=await client.functions.invoke('atd-live',{body:{sport:'hockey',gameId:b.game_id,playerId:b.player_id,betType:b.bet_type,statTarget:Number(b.stat_target||1)}});
-    if(error)throw error;
-    if(data?.error)throw new Error(data.error);
-    const result=data.result||'Pending';
-    const actualPL=result==='Won'?profit(b.stake,b.american_odds):result==='Lost'?-Number(b.stake||0):0;
-    const {error:updateError}=await client.from('atd_bets').update({current_stat:Number(data.current_stat||0),result,game_status:data.gameStatus||b.game_status||'Scheduled',actual_pl:actualPL,updated_at:new Date().toISOString()}).eq('id',b.id);
-    if(updateError)throw updateError;
-    return data;
-  }
-  function renderCards(list){
-    if((window.atdCurrentSport||'football')!=='hockey')return;
-    for(const id of ['pendingBets','finishedBets']){
-      const host=$(id);if(!host)continue;
-      const rows=list.filter(b=>id==='pendingBets'?b.result==='Pending':b.result!=='Pending');
-      if(!rows.length){host.innerHTML=`<div class="dashboard-empty">No ${id==='pendingBets'?'pending':'finished'} bets.</div>`;continue}
-      host.innerHTML=rows.map(b=>`<div class="swipe-bet" data-id="${b.id}"><div class="swipe-delete" aria-hidden="true">Delete</div><div class="swipe-content"><details class="dash-bet"><summary><div class="dash-bet-main"><strong>${b.player_name}</strong><span>${prop(b)} · ${odds(b.american_odds)}</span><span>${b.team||'—'} vs ${b.opponent||'—'}</span><span class="dash-game-time">${dt(b.game_date)}</span></div><div class="dash-bet-right"><span class="badge ${b.result}">${b.result}</span><span class="dash-chevron">›</span></div></summary><div class="dash-bet-detail"><div><span>Prop</span><strong>${prop(b)}</strong></div><div><span>Current</span><strong>${Number(b.current_stat||0)} / ${Number(b.stat_target||1)}</strong></div><div><span>Stake</span><strong>${money(b.stake)}</strong></div><div><span>Potential Profit</span><strong>${money(profit(b.stake,b.american_odds))}</strong></div><div><span>P/L</span><strong>${money(b.actual_pl||0)}</strong></div><p>${dt(b.game_date)} · ${b.game_status||'Scheduled'}</p>${b.result==='Pending'?`<button type="button" class="text-btn hockey-refresh" data-hrefresh="${b.id}">Refresh Live Stats</button>`:''}${b.result!=='Pending'&&b.result!=='Void'?`<button type="button" class="text-btn refund-bet" data-id="${b.id}">Mark Refunded</button>`:''}</div></details></div></div>`).join('');
-    }
-    if($('pendingCount'))$('pendingCount').textContent=`(${list.filter(b=>b.result==='Pending').length})`;
-    if($('finishedCount'))$('finishedCount').textContent=`(${list.filter(b=>b.result!=='Pending').length})`;
-  }
-  async function loadAndRender(){
-    if((window.atdCurrentSport||'football')!=='hockey')return;
-    const client=window.atdSupabase;if(!client)return;
-    const {data,error}=await client.from('atd_bets').select('*').eq('sport','hockey').order('created_at',{ascending:false});
-    if(error){console.warn('Hockey card load failed',error);return}
-    renderCards(data||[]);
-  }
-  document.addEventListener('click',async e=>{
-    const btn=e.target.closest('[data-hrefresh]');if(!btn)return;
-    e.preventDefault();e.stopImmediatePropagation();
-    const original=btn.textContent;btn.disabled=true;btn.textContent='Refreshing…';
-    try{
-      const client=window.atdSupabase;
-      const {data,error}=await client.from('atd_bets').select('*').eq('id',btn.dataset.hrefresh).single();
-      if(error)throw error;
-      await refreshHockeyBet(data);
-      await loadAndRender();
-    }catch(err){alert(err.message||'Could not refresh NHL stats.');btn.disabled=false;btn.textContent=original}
-  },true);
-  document.addEventListener('click',e=>{if(e.target.closest('[data-sport="hockey"]'))setTimeout(loadAndRender,300)});
-  document.addEventListener('visibilitychange',()=>{if(!document.hidden)setTimeout(loadAndRender,200)});
-  window.atdRefreshHockeyBet=refreshHockeyBet;
-  window.atdRenderHockeyCards=loadAndRender;
+const $=id=>document.getElementById(id),money=v=>new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(Number(v||0)),odds=v=>{const n=Number(v);return Number.isFinite(n)?`${n>0?'+':''}${n}`:''},profit=(s,o)=>Number(o)>0?Number(s||0)*Number(o)/100:Number(s||0)*100/Math.abs(Number(o)||1),dt=v=>v?new Intl.DateTimeFormat('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit',timeZone:'America/New_York'}).format(new Date(v)):'—';
+function prop(b){const t=String(b.bet_type||'point').toLowerCase(),n=t==='goal'?'Goal':t==='assist'?'Assist':'Point',x=Number(b.stat_target||1);return `${x}+ ${n}${x>1?'s':''}`}
+function parlayStatus(legs){if(legs.some(b=>b.result==='Lost'))return'Lost';if(legs.every(b=>b.result==='Won'))return'Won';if(legs.every(b=>b.result==='Void'))return'Void';return'Pending'}
+async function refreshHockeyBet(b){const c=window.atdSupabase;if(!c)throw new Error('Tracker connection is not ready.');const{data,error}=await c.functions.invoke('atd-live',{body:{sport:'hockey',gameId:b.game_id,playerId:b.player_id,betType:b.bet_type,statTarget:Number(b.stat_target||1)}});if(error)throw error;if(data?.error)throw new Error(data.error);const result=data.result||'Pending',actualPL=b.wager_type==='parlay'?0:result==='Won'?profit(b.stake,b.american_odds):result==='Lost'?-Number(b.stake||0):0;const{error:u}=await c.from('atd_bets').update({current_stat:Number(data.current_stat||0),result,game_status:data.gameStatus||b.game_status||'Scheduled',actual_pl:actualPL,updated_at:new Date().toISOString()}).eq('id',b.id);if(u)throw u;return data}
+function singleCard(b){return `<div class="swipe-bet" data-id="${b.id}"><div class="swipe-delete">Delete</div><div class="swipe-content"><details class="dash-bet"><summary><div class="dash-bet-main"><strong>${b.player_name}</strong><span>${prop(b)} · ${odds(b.american_odds)}</span><span>${b.team||'—'} vs ${b.opponent||'—'}</span><span class="dash-game-time">${dt(b.game_date)}</span></div><div class="dash-bet-right"><span class="badge ${b.result}">${b.result}</span><span class="dash-chevron">›</span></div></summary><div class="dash-bet-detail"><div><span>Current</span><strong>${Number(b.current_stat||0)} / ${Number(b.stat_target||1)}</strong></div><div><span>Stake</span><strong>${money(b.stake)}</strong></div><div><span>Potential Profit</span><strong>${money(profit(b.stake,b.american_odds))}</strong></div>${b.result==='Pending'?`<button type="button" class="text-btn hockey-refresh" data-hrefresh="${b.id}">Refresh Live Stats</button>`:''}</div></details></div></div>`}
+function parlayCard(legs){const first=legs[0],status=parlayStatus(legs),stake=Number(first.parlay_stake||first.stake||0),po=Number(first.parlay_odds||first.american_odds||0),hit=legs.filter(b=>b.result==='Won').length;return `<div class="swipe-bet hockey-parlay-card" data-parlay="${first.parlay_id}"><div class="swipe-content"><details class="dash-bet"><summary><div class="dash-bet-main"><strong>🏒 ${legs.length}-Leg Parlay</strong><span>${odds(po)} · ${money(stake)} stake</span><span>${hit}/${legs.length} legs hit</span></div><div class="dash-bet-right"><span class="badge ${status}">${status}</span><span class="dash-chevron">›</span></div></summary><div class="dash-bet-detail"><div><span>Potential Return</span><strong>${money(stake+profit(stake,po))}</strong></div><div><span>Potential Profit</span><strong>${money(profit(stake,po))}</strong></div><div class="hockey-parlay-legs">${legs.sort((a,b)=>(a.parlay_leg_number||0)-(b.parlay_leg_number||0)).map((b,i)=>`<div class="hockey-parlay-leg"><span class="hockey-leg-num">${i+1}</span><div><strong>${b.player_name} · ${prop(b)}</strong><small>${b.team||'—'} vs ${b.opponent||'—'} · ${dt(b.game_date)}</small><small>Current: ${Number(b.current_stat||0)} / ${Number(b.stat_target||1)}</small></div><span class="badge ${b.result}">${b.result}</span>${b.result==='Pending'?`<button type="button" class="text-btn hockey-refresh" data-hrefresh="${b.id}">Refresh</button>`:''}</div>`).join('')}</div></div></details></div></div>`}
+function renderCards(list){if((window.atdCurrentSport||'football')!=='hockey')return;const groups=[],seen=new Set();for(const b of list){if(b.wager_type==='parlay'&&b.parlay_id){if(seen.has(b.parlay_id))continue;seen.add(b.parlay_id);groups.push({type:'parlay',legs:list.filter(x=>x.parlay_id===b.parlay_id)})}else groups.push({type:'single',legs:[b]})}const status=g=>g.type==='parlay'?parlayStatus(g.legs):g.legs[0].result;for(const id of['pendingBets','finishedBets']){const host=$(id);if(!host)continue;const rows=groups.filter(g=>id==='pendingBets'?status(g)==='Pending':status(g)!=='Pending');host.innerHTML=rows.length?rows.map(g=>g.type==='parlay'?parlayCard(g.legs):singleCard(g.legs[0])).join(''):`<div class="dashboard-empty">No ${id==='pendingBets'?'pending':'finished'} bets.</div>`}const pending=groups.filter(g=>status(g)==='Pending').length,finished=groups.length-pending;if($('pendingCount'))$('pendingCount').textContent=`(${pending})`;if($('finishedCount'))$('finishedCount').textContent=`(${finished})`}
+async function loadAndRender(){if((window.atdCurrentSport||'football')!=='hockey')return;const c=window.atdSupabase;if(!c)return;const{data,error}=await c.from('atd_bets').select('*').eq('sport','hockey').order('created_at',{ascending:false});if(error){console.warn('Hockey card load failed',error);return}renderCards(data||[])}
+document.addEventListener('click',async e=>{const btn=e.target.closest('[data-hrefresh]');if(!btn)return;e.preventDefault();e.stopImmediatePropagation();const original=btn.textContent;btn.disabled=true;btn.textContent='Refreshing…';try{const c=window.atdSupabase,{data,error}=await c.from('atd_bets').select('*').eq('id',btn.dataset.hrefresh).single();if(error)throw error;await refreshHockeyBet(data);await loadAndRender()}catch(err){alert(err.message||'Could not refresh NHL stats.');btn.disabled=false;btn.textContent=original}},true);
+document.addEventListener('click',e=>{if(e.target.closest('[data-sport="hockey"]'))setTimeout(loadAndRender,300)});document.addEventListener('visibilitychange',()=>{if(!document.hidden)setTimeout(loadAndRender,200)});window.atdRefreshHockeyBet=refreshHockeyBet;window.atdRenderHockeyCards=loadAndRender;
 })();
