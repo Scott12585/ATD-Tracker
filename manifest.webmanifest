@@ -1,16 +1,16 @@
 {
-  "name": "ATD Tracker",
-  "short_name": "ATD Tracker",
-  "description": "NFL anytime touchdown betting tracker",
+  "name": "Bet Tracker",
+  "short_name": "Bet Tracker",
+  "description": "NFL and NHL betting tracker",
   "start_url": "./",
   "display": "standalone",
   "background_color": "#f5f1e8",
   "theme_color": "#0c4268",
   "icons": [
     {
-      "src": "https://uinhyjqsqrgfczqrmcya.supabase.co/functions/v1/atd-app-icon",
-      "sizes": "180x180",
-      "type": "image/jpeg",
+      "src": "D03BAEE2-BB1A-45A8-A571-9B6A07B7FDAE.png",
+      "sizes": "any",
+      "type": "image/png",
       "purpose": "any maskable"
     }
   ]
