@@ -1,6 +1,6 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.57.4/+esm';
 import './hockey.js?v=5';
-import './hockey-live.js?v=3';
+import './hockey-live.js?v=4';
 import './sport-form-fix.js?v=2';
 import './parlay-builder.js?v=1';
 const supabase=createClient('https://uinhyjqsqrgfczqrmcya.supabase.co','sb_publishable_qmrBMbSlLInIYT2IXwy49Q_WnMiToQJ',{auth:{persistSession:true,autoRefreshToken:true}});
