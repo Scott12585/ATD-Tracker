@@ -1169,48 +1169,54 @@ function expansionLiveContext_(schedule,season,week,now) {
   console.log('Live context eligible teams: '+(Array.from(eligible).join(', ') || 'none'));
   if (!eligible.size) selected.slice(0,4).forEach(g => console.log('Schedule context: '+g.Away+' vs '+g.Home+'; date '+String(g.Date)+'; status '+String(g.Status)));
   if (!eligible.size) return {injuries:injuries,depth:depth,eligible:eligible};
-  const teams = Array.from(eligible);
-  const urls = ['https://site.api.espn.com/apis/site/v2/sports/football/nfl/injuries'].concat(teams.map(t => 'https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/'+(t === 'LAR' ? 'lar' : t.toLowerCase())+'/depthcharts'));
-  let responses;
-  try { responses = UrlFetchApp.fetchAll(urls.map(url => ({url:url,muteHttpExceptions:true}))); }
-  catch(e) { console.log('Live status sources unavailable: '+e.message); return {injuries:injuries,depth:depth,eligible:eligible}; }
-  responses.forEach((response,i) => {
-    try {
-      if (response.getResponseCode() !== 200) throw new Error('HTTP '+response.getResponseCode());
-      const data = JSON.parse(response.getContentText());
-      if (!expansionFreshJSON_(data,season,now)) throw new Error('Stale or wrong-season snapshot: season '+(data.season && data.season.year)+'; timestamp '+data.timestamp);
-      if (i === 0) {
-        (data.injuries || []).forEach(group => {
-          const team = expansionSyncTeam_(group.displayName);
-          if (!eligible.has(team)) return;
-          (group.injuries || []).forEach(item => {
-            const name = item.athlete && item.athlete.displayName;
-            if (!name) return;
-            const key = expansionNameKey_(name,team), stamp = Date.parse(item.date || '');
-            const current = injuries[key];
-            if (!current || stamp > current.stamp) injuries[key] = {status:String(item.status || ''),stamp:stamp,source:'ESPN current snapshot '+data.timestamp};
-          });
-        });
-      } else {
-        const team = expansionSyncTeam_(data.team && data.team.abbreviation || teams[i-1]);
-        if (team !== teams[i-1]) throw new Error('Depth chart team mismatch');
-        (data.depthchart || []).forEach(formation => {
-          Object.values(formation.positions || {}).forEach(slot => {
-            const pos = normalizePosition(slot.position && slot.position.abbreviation);
-            if (!['QB','RB','WR','TE'].includes(pos)) return;
-            (slot.athletes || []).forEach((athlete,index) => {
-              if (!athlete.displayName) return;
-              const key = expansionNameKey_(athlete.displayName,team), rank = index+1;
-              if (!depth[key] || rank < depth[key].rank) depth[key] = {rank:rank,position:pos,source:'ESPN depth '+data.timestamp};
-            });
-          });
-        });
-      }
-    } catch(e) { console.log('Optional status source '+i+' unavailable: '+e.message); }
-  });
-  console.log('Live context source matches: '+Object.keys(injuries).length+' injury entries; '+Object.keys(depth).length+' depth entries');
+  try {
+    const url = 'https://github.com/nflverse/nflverse-data/releases/download/depth_charts/depth_charts_'+season+'.csv.gz';
+    const response = UrlFetchApp.fetch(url,{muteHttpExceptions:true});
+    if (response.getResponseCode() !== 200) throw new Error('HTTP '+response.getResponseCode());
+    const blob = response.getBlob().setContentType('application/gzip');
+    const text = Utilities.ungzip(blob).getDataAsString('UTF-8');
+    const rows = expansionFreshDepthCSV_(text,now);
+    const latest = {};
+    rows.forEach(r => {
+      const team = expansionSyncTeam_(r.team);
+      if (eligible.has(team) && (!latest[team] || r.dt > latest[team])) latest[team] = r.dt;
+    });
+    rows.forEach(r => {
+      const team = expansionSyncTeam_(r.team), pos = normalizePosition(r.pos_abb), rank = Number(r.pos_rank);
+      if (!eligible.has(team) || r.dt !== latest[team] || !['QB','RB','WR','TE'].includes(pos) || !Number.isInteger(rank) || rank < 1 || !r.player_name) return;
+      const key = expansionNameKey_(r.player_name,team);
+      if (depth[key] && depth[key].position !== pos) { depth[key].ambiguous = true; return; }
+      if (!depth[key] || rank < depth[key].rank) depth[key] = {rank:rank,position:pos,source:'nflverse depth snapshot '+r.dt};
+    });
+    Object.keys(depth).forEach(k => { if (depth[k].ambiguous) delete depth[k]; });
+    console.log('nflverse fresh depth teams: '+Object.keys(latest).length+'/'+eligible.size+'; matched player entries '+Object.keys(depth).length);
+    console.log('Injury status uses selected-week nflverse reports and roster restrictions; missing reports do not confirm availability.');
+  } catch(e) { console.log('nflverse depth source unavailable: '+e.message+'; recent passing leader fallback remains labeled unverified.'); }
   return {injuries:injuries,depth:depth,eligible:eligible};
 }
+function expansionFreshDepthCSV_(text,now) {
+  // Keep only fresh rows before CSV parsing: the season file includes many historical snapshots.
+  const firstEnd = text.indexOf('\n');
+  if (firstEnd < 0) throw new Error('Empty depth CSV');
+  const header = text.slice(0,firstEnd).replace(/\r$/,'');
+  const fields = Utilities.parseCsv(header)[0];
+  if (fields[0] !== 'dt' || !['team','player_name','pos_abb','pos_rank'].every(k => fields.includes(k))) throw new Error('Depth CSV schema changed');
+  const lines = [header];
+  let offset = firstEnd+1;
+  while (offset < text.length) {
+    let end = text.indexOf('\n',offset); if (end < 0) end = text.length;
+    const comma = text.indexOf(',',offset);
+    if (comma >= offset && comma < end) {
+      const stamp = Date.parse(text.slice(offset,comma).replace(/^"|"$/g,''));
+      if (Number.isFinite(stamp) && now-stamp >= -3600000 && now-stamp <= 48*3600000) lines.push(text.slice(offset,end));
+    }
+    offset = end+1;
+  }
+  if (lines.length === 1) throw new Error('No depth snapshots within 48 hours');
+  const data = Utilities.parseCsv(lines.join('\n'));
+  return data.slice(1).map(row => { const r = {}; fields.forEach((key,i) => r[key] = row[i]); return r; });
+}
+
 function expansionAvailability_(p,rosters,reports,live,week) {
   const key = expansionNameKey_(p.Player,p.Team), roster = rosters.names[key], injury = reports[key], current = live.injuries[key], depth = live.depth[key];
   const sources = [], warnings = [];
@@ -1324,3 +1330,4 @@ function expansionApplyCurrentContext_(rows,indexed) {
     r.Notes = String(r.Notes || '').replace(/ \[Current context\][\s\S]*$/,'')+' [Current context] '+context.Notes+' Source: '+context['Status Source'];
   });
 }
+
