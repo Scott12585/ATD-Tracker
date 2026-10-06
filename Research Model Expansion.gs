@@ -1,5 +1,5 @@
 /***************************************************************
- * NFL RESEARCH MODEL EXPANSION — PHASE 2
+ * NFL RESEARCH MODEL EXPANSION — PHASE 3
  * -------------------------------------------------------------
  * Position-specific QB / RB / TE research model using the FTN
  * tables confirmed by the Phase 1 discovery test.
@@ -7,7 +7,7 @@
  * SAFE / ISOLATED:
  * - Does not replace the working WR model.
  * - Does not change the existing Supabase sync.
- * - Writes only to: Player Research Expansion
+ * - Writes only to: Player Research Expansion / Player Research Matchups
  *
  * RUN:
  *   buildPlayerResearchExpansion()
@@ -220,7 +220,7 @@ function weightedExpansionScore_(items) {
   let total = 0;
   let weight = 0;
   items.forEach(item => {
-    if (item.value === null || item.value === undefined || isNaN(item.value)) return;
+    if (item.value === null || item.value === undefined || item.value === '' || !isFinite(Number(item.value))) return;
     total += item.value * item.weight;
     weight += item.weight;
   });
@@ -393,6 +393,7 @@ function scoreTEExpansion_(p, r) {
 function writeExpansionSheet_(ss, players, season) {
   let sheet = ss.getSheetByName(RESEARCH_EXPANSION.SHEET);
   if (!sheet) sheet = ss.insertSheet(RESEARCH_EXPANSION.SHEET);
+  if (sheet.getFilter()) sheet.getFilter().remove();
   sheet.clear();
 
   const headers = [
@@ -502,4 +503,209 @@ function testPlayerResearchExpansion() {
   });
 
   console.log('VALIDATION COMPLETE');
+}
+
+
+/***************************************************************
+ * PHASE 3: WEEKLY MATCHUPS (isolated; no Best Plays/sync writes)
+ * Run buildPlayerResearchMatchups(), then testPlayerResearchMatchups().
+ * Defense: season-to-date per-game allowance percentile, shrunk
+ * toward neutral with games/(games+4); blend 75% player / 25% defense.
+ * Scores are research indices, not probabilities or yard projections.
+ * FTN base scores are the current season snapshot, NOT backtest inputs.
+ ***************************************************************/
+function expansionTable_(ss, name, required) {
+  const sheet = ss.getSheetByName(name);
+  if (!sheet || sheet.getLastRow() < 2) throw new Error('Missing data: ' + name);
+  const data = sheet.getDataRange().getValues();
+  const headers = data.shift().map(x => String(x).trim());
+  required.forEach(k => { if (!headers.includes(k)) throw new Error(name + ': missing column ' + k); });
+  return data.filter(r => r.some(x => x !== '')).map(r => {
+    const o = {}; headers.forEach((k,i) => o[k] = r[i]); return o;
+  });
+}
+
+function buildPlayerResearchMatchups() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const week = Number(getCurrentWeek());
+  if (!Number.isInteger(week) || week < 1 || week > 18) throw new Error('Select a regular-season week (1–18) in Settings!B3.');
+  const season = Number(NFL.SEASON);
+  const players = expansionTable_(ss, RESEARCH_EXPANSION.SHEET,
+    ['Season','Position','Player','Team','Pass TD Score','Pass Yards Score','Rush TD Score','Rush Yards Score','Receiving TD Score','Receiving Yards Score']);
+  const schedule = expansionTable_(ss, NFL.SHEETS.SCHEDULE,
+    ['Season','Week','Away','Home','Game ID','Status','Date','Time ET']);
+  const logs = expansionTable_(ss, NFL.SHEETS.GAME_LOG,
+    ['Season','Week','Defense','Game ID','Pass TD','QB Rush TD','RB Rush TD','RB Rec TD','TE TD']);
+  const raw = expansionTable_(ss, NFL.SHEETS.RAW_PLAYERS,
+    ['season','week','position','passing_yards','rushing_yards','receiving_yards']);
+  if (!raw.some(r => Object.prototype.hasOwnProperty.call(r,'recent_team') || Object.prototype.hasOwnProperty.call(r,'team'))) {
+    throw new Error('Raw Player Stats: missing recent_team/team');
+  }
+  const context = expansionDefenseContext_(schedule, logs, raw, season, week);
+  const results = expansionWeeklyRows_(players, context, season, week);
+  if (!results.length) throw new Error('No QB/RB/TE players matched this season/week. Check player model and schedule.');
+  const headers = ['Season','Week','Position','Player','Team','Opponent','Game ID','Date','Time ET','Game Status','Defense Games',
+    'Anytime TD Score','Pass TD Score','Pass Yards Score','Rush TD Score','Rush Yards Score','Receiving TD Score','Receiving Yards Score',
+    'Base Pass TD','Base Pass Yards','Base Rush TD','Base Rush Yards','Base Receiving TD','Base Receiving Yards',
+    'Defense Pass TD Index','Defense Pass Yards Index','Defense Position Rush TD Index','Defense Position Rush Yards Index',
+    'Defense Position Rec TD Index','Defense Position Rec Yards Index','Notes'];
+  let sheet = ss.getSheetByName('Player Research Matchups');
+  if (!sheet) sheet = ss.insertSheet('Player Research Matchups');
+  if (sheet.getFilter()) sheet.getFilter().remove();
+  sheet.clear();
+  if (sheet.getMaxColumns() < headers.length) sheet.insertColumnsAfter(sheet.getMaxColumns(), headers.length-sheet.getMaxColumns());
+  if (sheet.getMaxRows() < results.length+1) sheet.insertRowsAfter(sheet.getMaxRows(), results.length+1-sheet.getMaxRows());
+  sheet.getRange(1,1,1,headers.length).setValues([headers]).setFontWeight('bold').setBackground('#1f4e78').setFontColor('#ffffff');
+  sheet.getRange(2,1,results.length,headers.length).setValues(results.map(r => headers.map(k => r[k] === undefined ? '' : r[k])));
+  sheet.getRange(2,12,results.length,19).setNumberFormat('0.0');
+  sheet.getRange(1,1,results.length+1,headers.length).createFilter();
+  sheet.setFrozenRows(1); sheet.autoResizeColumns(1,headers.length); sheet.setColumnWidth(4,180); sheet.setColumnWidth(headers.length,420);
+  console.log('MATCHUPS BUILT: season ' + season + ', week ' + week + ', players ' + results.length);
+  console.log('Excluded players without a game: ' + (players.filter(p => Number(p.Season) === season).length-results.length));
+  console.log('Defense history excludes week ' + week + ' and later. FTN base scores are current snapshot; not historical backtest scores.');
+  return results;
+}
+
+function expansionDefenseContext_(schedule, logs, raw, season, week) {
+  const current = {}, history = {}, defenses = {};
+  schedule.filter(g => Number(g.Season) === season).forEach(g => {
+    const away = normalizeNFLTeam(g.Away), home = normalizeNFLTeam(g.Home);
+    if (!away || !home || !g['Game ID']) throw new Error('Incomplete Schedule game');
+    if (Number(g.Week) === week) {
+      [[away,home],[home,away]].forEach(pair => {
+        if (current[pair[0]]) throw new Error('Duplicate weekly schedule for ' + pair[0]);
+        current[pair[0]] = { opponent: pair[1], game: g };
+      });
+    }
+    if (Number(g.Week) < 1 || Number(g.Week) >= week || String(g.Status).toLowerCase() !== 'final') return;
+    [[away,home],[home,away]].forEach(pair => {
+      const key = g['Game ID'] + '|' + pair[0];
+      if (history[key]) throw new Error('Duplicate historical schedule game: ' + key);
+      const item = { team: pair[0], offense: pair[1], week: Number(g.Week), values: {}, present: {} };
+      history[key] = item;
+      if (!defenses[pair[0]]) defenses[pair[0]] = [];
+      defenses[pair[0]].push(item);
+    });
+  });
+  if (!Object.keys(current).length) throw new Error('No Schedule games for selected week.');
+  const tdKeys = {'Pass TD':'passTD','QB Rush TD':'QBrushTD','RB Rush TD':'RBrushTD','RB Rec TD':'RBrecTD','TE TD':'TErecTD'};
+  const seenLogs = new Set();
+  logs.filter(r => Number(r.Season) === season && Number(r.Week) < week).forEach(r => {
+    const key = r['Game ID'] + '|' + normalizeNFLTeam(r.Defense), game = history[key];
+    if (!game) return;
+    if (seenLogs.has(key)) throw new Error('Duplicate Team Game Log row: ' + key);
+    seenLogs.add(key);
+    Object.keys(tdKeys).forEach(k => {
+      const n = numExpansion_(r[k]);
+      if (n !== null && n >= 0) { game.values[tdKeys[k]] = n; game.present[tdKeys[k]] = true; }
+    });
+  });
+  // Resolve opponent from completed schedule, avoiding reliance on optional raw opponent columns.
+  const offenseWeek = {};
+  Object.values(history).forEach(g => {
+    const key = g.offense + '|' + g.week;
+    if (offenseWeek[key]) throw new Error('Ambiguous team/week history: ' + key);
+    offenseWeek[key] = g;
+  });
+  const seenPlayers = new Set();
+  raw.filter(r => Number(r.season) === season && Number(r.week) >= 1 && Number(r.week) < week && (!r.season_type || r.season_type === 'REG')).forEach(r => {
+    const team = normalizeNFLTeam(r.recent_team || r.team), game = offenseWeek[team+'|'+Number(r.week)];
+    if (!game) return;
+    const id = r.player_id || r.gsis_id;
+    if (!id) throw new Error('Raw Player Stats: missing player ID');
+    const key = id+'|'+Number(r.week);
+    if (seenPlayers.has(key)) throw new Error('Duplicate weekly player stats: ' + key);
+    seenPlayers.add(key);
+    const pos = normalizePosition(r.position);
+    const metrics = [];
+    if (pos === 'QB') metrics.push(['passing_yards','passYards'],['rushing_yards','QBrushYards']);
+    if (pos === 'RB') metrics.push(['rushing_yards','RBrushYards'],['receiving_yards','RBrecYards']);
+    if (pos === 'TE') metrics.push(['receiving_yards','TErecYards']);
+    metrics.forEach(pair => {
+      const n = numExpansion_(r[pair[0]]);
+      if (n === null) return;
+      game.values[pair[1]] = (game.values[pair[1]] || 0) + n;
+      game.present[pair[1]] = true;
+    });
+  });
+  // Missing source rows are never silently converted into zero allowance.
+  const keys = ['passTD','passYards','QBrushTD','QBrushYards','RBrushTD','RBrushYards','RBrecTD','RBrecYards','TErecTD','TErecYards'];
+  const rates = {}, indices = {}, games = {};
+  Object.keys(defenses).forEach(team => {
+    const list = defenses[team]; games[team] = list.length; rates[team] = {}; indices[team] = {};
+    keys.forEach(k => {
+      if (list.every(g => g.present[k])) rates[team][k] = list.reduce((s,g) => s+g.values[k],0)/list.length;
+    });
+  });
+  keys.forEach(k => {
+    const values = Object.keys(rates).filter(t => rates[t][k] !== undefined).map(t => rates[t][k]).sort((a,b) => a-b);
+    Object.keys(rates).forEach(team => {
+      const v = rates[team][k];
+      if (v === undefined || values.length < 2) return;
+      const below = values.filter(x => x < v).length, equal = values.filter(x => x === v).length;
+      const percentile = 100*(below+(equal-1)/2)/(values.length-1);
+      indices[team][k] = Math.round((50+(percentile-50)*games[team]/(games[team]+4))*10)/10;
+    });
+  });
+  return { current: current, indices: indices, games: games };
+}
+
+function expansionMatchupScore_(base, defense) {
+  const b = numExpansion_(base);
+  if (b === null) return '';
+  const d = numExpansion_(defense);
+  return Math.round(Math.max(0,Math.min(100,b*0.75+(d === null ? 50 : d)*0.25))*10)/10;
+}
+
+function expansionWeeklyRows_(players, context, season, week) {
+  const rows = [];
+  players.filter(p => Number(p.Season) === season && ['QB','RB','TE'].includes(p.Position)).forEach(p => {
+    const team = normalizeNFLTeam(p.Team), matchup = context.current[team];
+    if (!matchup) return;
+    const pos = p.Position, d = context.indices[matchup.opponent] || {}, g = matchup.game;
+    const row = {'Season':season,'Week':week,'Position':pos,'Player':p.Player,'Team':team,'Opponent':matchup.opponent,
+      'Game ID':g['Game ID'],'Date':g.Date,'Time ET':g['Time ET'],'Game Status':g.Status,'Defense Games':context.games[matchup.opponent] || 0};
+    const metrics = [];
+    if (pos === 'QB') metrics.push(['Pass TD','passTD'],['Pass Yards','passYards'],['Rush TD','QBrushTD'],['Rush Yards','QBrushYards']);
+    if (pos === 'RB') metrics.push(['Rush TD','RBrushTD'],['Rush Yards','RBrushYards'],['Receiving TD','RBrecTD'],['Receiving Yards','RBrecYards']);
+    if (pos === 'TE') metrics.push(['Receiving TD','TErecTD'],['Receiving Yards','TErecYards']);
+    const missing = [];
+    metrics.forEach(pair => {
+      const label = pair[0], key = pair[1], base = p[label+' Score'];
+      row['Base '+label] = base;
+      row[label+' Score'] = expansionMatchupScore_(base,d[key]);
+      const defenseLabel = label.replace('Rush','Position Rush').replace('Receiving','Position Rec');
+      row['Defense '+defenseLabel+' Index'] = d[key] === undefined ? '' : d[key];
+      if (d[key] === undefined) missing.push(label);
+    });
+    row['Anytime TD Score'] = pos === 'QB' ? row['Rush TD Score'] : pos === 'TE' ? row['Receiving TD Score'] : weightedExpansionScore_([
+      {value:numExpansion_(row['Rush TD Score']),weight:70},{value:numExpansion_(row['Receiving TD Score']),weight:30}]);
+    row.Notes = 'Research index; current FTN snapshot; verify availability.' + (pos === 'QB' ? ' ATD uses rushing only; passing TDs are separate.' : '') +
+      (missing.length ? ' Neutral defense fallback: '+missing.join(', ')+'.' : '');
+    rows.push(row);
+  });
+  return rows.sort((a,b) => a.Position.localeCompare(b.Position) || (numExpansion_(b['Anytime TD Score']) || 0)-(numExpansion_(a['Anytime TD Score']) || 0));
+}
+
+function testPlayerResearchMatchups() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const rows = expansionTable_(ss,'Player Research Matchups',['Season','Week','Position','Player','Opponent','Anytime TD Score','Notes']);
+  const week = Number(getCurrentWeek());
+  const scoreFields = ['Anytime TD Score','Pass TD Score','Pass Yards Score','Rush TD Score','Rush Yards Score','Receiving TD Score','Receiving Yards Score'];
+  rows.forEach(r => {
+    if (Number(r.Season) !== Number(NFL.SEASON) || Number(r.Week) !== week) throw new Error('Stale matchup output; rebuild for selected season/week.');
+    scoreFields.forEach(k => { const n = numExpansion_(r[k]); if (n !== null && (n < 0 || n > 100)) throw new Error('Invalid score: '+r.Player+' '+k); });
+    if (r.Position === 'QB' && r['Anytime TD Score'] !== r['Rush TD Score']) throw new Error('QB ATD incorrectly includes passing TDs.');
+  });
+  ['QB','RB','TE'].forEach(pos => {
+    console.log('----------------------------------------');
+    scoreFields.forEach(field => {
+      const ranked = rows.filter(r => r.Position === pos && numExpansion_(r[field]) !== null).sort((a,b) => Number(b[field])-Number(a[field])).slice(0,5);
+      if (!ranked.length) return;
+      console.log(pos+' TOP 5 — '+field.toUpperCase());
+      ranked.forEach(r => console.log(r.Player+' | '+r.Team+' vs '+r.Opponent+' | '+r[field]+' | defense games '+r['Defense Games']));
+    });
+  });
+  console.log('Neutral defense fallback rows: '+rows.filter(r => String(r.Notes).includes('fallback')).length+'/'+rows.length);
+  console.log('MATCHUP VALIDATION COMPLETE — research indices, not probabilities; check injury/role status before integration.');
 }
