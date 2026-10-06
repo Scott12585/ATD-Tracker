@@ -1096,7 +1096,7 @@ function expansionRecentUsage_(raw,schedule,rosters,season,week) {
     coverage[team+'|'+w] = true;
     if (!stats[key]) stats[key] = {};
     if (stats[key][w]) { stats[key][w].ambiguous = true; return; }
-    stats[key][w] = {pass:numExpansion_(r.attempts !== undefined ? r.attempts : r.passing_attempts),rush:numExpansion_(r.carries !== undefined ? r.carries : r.rushing_attempts),targets:numExpansion_(r.targets)};
+    stats[key][w] = {position:pos,team:team,pass:numExpansion_(r.attempts !== undefined ? r.attempts : r.passing_attempts),rush:numExpansion_(r.carries !== undefined ? r.carries : r.rushing_attempts),targets:numExpansion_(r.targets)};
   });
   return {games:games,coverage:coverage,stats:stats};
 }
@@ -1126,6 +1126,28 @@ function expansionRecentProfile_(player,recent) {
     passScreen:pos === 'QB' ? screen(pass,10) : 'N/A',rushScreen:['QB','RB'].includes(pos) ? screen(rush,pos === 'QB' ? 3 : 5) : 'N/A',
     recScreen:['RB','WR','TE'].includes(pos) ? screen(targets,pos === 'WR' ? 3 : 2) : 'N/A'};
 }
+function expansionQBRoleAllowed_(player,recent,availability) {
+  if (player.Position !== 'QB') return true;
+  if (expansionUnavailable_(availability.availability)) return false;
+  if (availability.rank !== null) return availability.rank === 1;
+  const team = expansionSyncTeam_(player.Team), key = expansionNameKey_(player.Player,team);
+  const latest = (recent.games[team] || [])[0];
+  if (!latest || !recent.coverage[team+'|'+latest]) return false;
+  const own = (recent.stats[key] || {})[latest];
+  if (!own || own.ambiguous || own.position !== 'QB' || own.pass === null || own.pass < 15) return false;
+  let total = 0, leaders = 0, invalid = false;
+  Object.values(recent.stats).forEach(history => {
+    const row = history[latest];
+    if (!row || row.team !== team) return;
+    if (row.ambiguous || row.pass === null) { invalid = true; return; }
+    total += row.pass;
+    if (row.position === 'QB' && row.pass >= own.pass) leaders++;
+  });
+  if (invalid || leaders !== 1 || total <= 0 || own.pass/total < 0.60) return false;
+  availability.role = 'Recent passing leader; starter unverified';
+  availability.source += '; prior completed team game week '+latest+' passing attempts (role inference)';
+  return true;
+}
 function expansionUnavailable_(status) {
   return /^(out|inactive|injured reserve|ir|suspended|unavailable|reserve|practice squad|released|retired|exempt)(\b|$)/i.test(String(status || '').trim());
 }
@@ -1135,6 +1157,8 @@ function expansionFreshJSON_(data,season,now) {
 }
 function expansionLiveContext_(schedule,season,week,now) {
   const eligible = new Set();
+  const selected = schedule.filter(g => Number(g.Season) === season && Number(g.Week) === week);
+  console.log('Live context window: '+new Date(now).toISOString()+'; selected games '+selected.length);
   schedule.filter(g => Number(g.Season) === season && Number(g.Week) === week && String(g.Status).toLowerCase() !== 'final').forEach(g => {
     const stamp = g.Date instanceof Date ? g.Date.getTime() : Date.parse(String(g.Date));
     if (Number.isFinite(stamp) && stamp-now >= -86400000 && stamp-now <= 7*86400000) {
@@ -1142,6 +1166,8 @@ function expansionLiveContext_(schedule,season,week,now) {
     }
   });
   const injuries = {}, depth = {};
+  console.log('Live context eligible teams: '+(Array.from(eligible).join(', ') || 'none'));
+  if (!eligible.size) selected.slice(0,4).forEach(g => console.log('Schedule context: '+g.Away+' vs '+g.Home+'; date '+String(g.Date)+'; status '+String(g.Status)));
   if (!eligible.size) return {injuries:injuries,depth:depth,eligible:eligible};
   const teams = Array.from(eligible);
   const urls = ['https://site.api.espn.com/apis/site/v2/sports/football/nfl/injuries'].concat(teams.map(t => 'https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/'+(t === 'LAR' ? 'lar' : t.toLowerCase())+'/depthcharts'));
@@ -1152,7 +1178,7 @@ function expansionLiveContext_(schedule,season,week,now) {
     try {
       if (response.getResponseCode() !== 200) throw new Error('HTTP '+response.getResponseCode());
       const data = JSON.parse(response.getContentText());
-      if (!expansionFreshJSON_(data,season,now)) throw new Error('Stale or wrong-season snapshot');
+      if (!expansionFreshJSON_(data,season,now)) throw new Error('Stale or wrong-season snapshot: season '+(data.season && data.season.year)+'; timestamp '+data.timestamp);
       if (i === 0) {
         (data.injuries || []).forEach(group => {
           const team = expansionSyncTeam_(group.displayName);
@@ -1182,6 +1208,7 @@ function expansionLiveContext_(schedule,season,week,now) {
       }
     } catch(e) { console.log('Optional status source '+i+' unavailable: '+e.message); }
   });
+  console.log('Live context source matches: '+Object.keys(injuries).length+' injury entries; '+Object.keys(depth).length+' depth entries');
   return {injuries:injuries,depth:depth,eligible:eligible};
 }
 function expansionAvailability_(p,rosters,reports,live,week) {
@@ -1192,7 +1219,7 @@ function expansionAvailability_(p,rosters,reports,live,week) {
   const unavailable = {RES:'Reserve',DEV:'Practice squad',INA:'Inactive',CUT:'Released',RET:'Retired',EXE:'Exempt'};
   if (rosterStatus && Number(roster.week) === week) {
     sources.push('nflverse roster week '+roster.week);
-    availability = unavailable[rosterStatus] || 'Active roster; game-day unverified';
+    availability = unavailable[rosterStatus] || (rosterStatus === 'ACT' ? 'Active roster; game-day unverified' : 'Unverified');
   }
   if (injury) {
     sources.push('nflverse injury report week '+week);
@@ -1236,7 +1263,7 @@ function buildPlayerAvailabilityAndUsage() {
     const key = expansionNameKey_(p.Player,p.Team);
     if (seen.has(key)) return; seen.add(key);
     const usage = expansionRecentProfile_(p,recent), availability = expansionAvailability_(p,rosters,reports,live,week);
-    const qbRoleBlocked = p.Position === 'QB' && availability.rank !== 1;
+    const qbRoleBlocked = !expansionQBRoleAllowed_(p,recent,availability);
     const passScreen = qbRoleBlocked ? 'Role review' : usage.passScreen;
     const rushScreen = qbRoleBlocked ? 'Role review' : usage.rushScreen;
     const notes = 'Recent team weeks '+(usage.weeks || 'none')+'; pass/G '+(usage.pass === null ? 'unknown' : usage.pass)+'; carries/G '+(usage.rush === null ? 'unknown' : usage.rush)+'; targets/G '+(usage.targets === null ? 'unknown' : usage.targets)+'; '+availability.role+'; usage '+usage.trend+'. '+availability.warnings;
