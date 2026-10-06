@@ -803,3 +803,158 @@ function expansionMarketWorkloadOK_(row, field) {
   if (field.indexOf('Receiving') === 0) return row['Receiving Workload'] === 'Screen passed';
   return false;
 }
+
+/***************************************************************
+ * BEST PLAYS INTEGRATION
+ * Run buildExpandedBestPlays(), then testExpandedBestPlays().
+ * Rebuilds legacy WR Best Plays, appends screened QB/RB/TE ATD
+ * candidates, and creates Player Prop Research for other markets.
+ * Does not send data externally or change automatic triggers.
+ * Legacy WR Confidence and expansion indices are different models.
+ ***************************************************************/
+function expansionIntegrationRows_(matchups, season, week) {
+  const atd = [], props = [], seen = new Set();
+  const markets = [
+    ['Passing TD','Pass TD Score'],['Passing Yards','Pass Yards Score'],
+    ['Rushing TD','Rush TD Score'],['Rushing Yards','Rush Yards Score'],
+    ['Receiving TD','Receiving TD Score'],['Receiving Yards','Receiving Yards Score']
+  ];
+  matchups.forEach(r => {
+    if (Number(r.Season) !== season || Number(r.Week) !== week) throw new Error('Player Research Matchups is stale. Rebuild it for Settings!B3.');
+    const team = normalizeNFLTeam(r.Team), opponent = normalizeNFLTeam(r.Opponent);
+    const key = String(r.Player).trim().toLowerCase()+'|'+team;
+    if (!r.Player || !team || !opponent || !['QB','RB','TE'].includes(r.Position)) throw new Error('Invalid matchup identity.');
+    if (seen.has(key)) throw new Error('Duplicate matchup player: '+key);
+    seen.add(key);
+    // Unverified remains explicitly labeled. Block known unavailable
+    // statuses if they are provided in the source; never infer injury status.
+    const availability = String(r.Availability || 'Unverified').trim();
+    if (['out','inactive','injured reserve','ir','suspended','unavailable'].includes(availability.toLowerCase())) return;
+    markets.forEach(pair => {
+      const score = numExpansion_(r[pair[1]]);
+      if (score === null || !expansionMarketWorkloadOK_(r,pair[1])) return;
+      if (score < 0 || score > 100) throw new Error('Invalid '+pair[0]+' index for '+r.Player);
+      props.push({Season:season,Week:week,Position:r.Position,Player:r.Player,Team:team,Opponent:opponent,
+        'Game ID':r['Game ID'],Market:pair[0],'Research Score':score,Availability:availability,
+        'Score Basis':'Position-specific FTN player index + defensive allowance index; not probability or projected yards',
+        Notes:r.Notes || ''});
+    });
+    const score = numExpansion_(r['Anytime TD Score']);
+    if (score === null || !expansionMarketWorkloadOK_(r,'Anytime TD Score') || score < 60) return;
+    if (score > 100) throw new Error('Invalid ATD index for '+r.Player);
+    if (r.Position === 'QB' && score !== numExpansion_(r['Rush TD Score'])) throw new Error('QB ATD includes passing TDs.');
+    atd.push({row:r,team:team,opponent:opponent,score:score,availability:availability});
+  });
+  atd.sort((a,b) => b.score-a.score || a.row.Player.localeCompare(b.row.Player));
+  props.sort((a,b) => a.Market.localeCompare(b.Market) || a.Position.localeCompare(b.Position) || b['Research Score']-a['Research Score']);
+  return {atd:atd,props:props};
+}
+
+function buildExpandedBestPlays() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet(), season = Number(NFL.SEASON), week = Number(getCurrentWeek());
+  const matchups = expansionTable_(ss,'Player Research Matchups',[
+    'Season','Week','Position','Player','Team','Opponent','Anytime TD Score',
+    'Pass Workload','Rush Workload','Receiving Workload','Availability','Notes']);
+  // Validate all source inputs before changing the legacy board.
+  const prepared = expansionIntegrationRows_(matchups,season,week);
+  const schedule = expansionTable_(ss,NFL.SHEETS.SCHEDULE,['Season','Week','Away','Home','Game ID']);
+  const locations = {};
+  schedule.filter(g => Number(g.Season) === season && Number(g.Week) === week).forEach(g => {
+    locations[normalizeNFLTeam(g.Away)] = 'A'; locations[normalizeNFLTeam(g.Home)] = 'H';
+  });
+  if (typeof buildBestPlays !== 'function' || typeof buildGameBestPlays !== 'function') {
+    throw new Error('The main tracker must include buildBestPlays and buildGameBestPlays.');
+  }
+  buildBestPlays();
+  const sheet = ss.getSheetByName('Best Plays'), original = sheet.getDataRange().getValues();
+  const baseHeaders = original[0].map(x => String(x).trim());
+  ['Rank','Player','Team','Opponent','H/A','Play Type','Confidence','Matchup Score','Key Reason'].forEach(k => {
+    if (!baseHeaders.includes(k)) throw new Error('Best Plays: missing '+k);
+  });
+  const extra = ['Position','Research Model','Availability','Season','Week','Score Basis'];
+  const headers = baseHeaders.concat(extra);
+  const output = original.slice(1).filter(r => r[baseHeaders.indexOf('Player')]).map(r => {
+    const cells = r.slice(0,baseHeaders.length);
+    while (cells.length < baseHeaders.length) cells.push('');
+    return cells.concat(['WR','Legacy WR TD model','Unverified',season,week,'Legacy WR Confidence; research signal, not probability']);
+  });
+  prepared.atd.forEach(p => {
+    const r = p.row, obj = {};
+    obj.Rank = output.length+1; obj.Player = r.Player; obj.Team = p.team; obj.Opponent = p.opponent;
+    obj['H/A'] = locations[p.team] || '';
+    obj['Play Type'] = r.Position+' Anytime TD';
+    // Retain compatibility with existing consumers without inventing
+    // WR usage, red-zone, coverage or historical TD fields for these players.
+    obj.Confidence = p.score; obj['Matchup Score'] = p.score;
+    obj['Key Reason'] = r.Position+' ATD research index '+p.score+
+      '; workload screen passed; availability '+p.availability.toLowerCase()+
+      (r.Position === 'QB' ? '; rushing TD signal only' : '')+
+      '; different model from WR Confidence; not a calibrated probability. '+(r.Notes || '');
+    obj.Position = r.Position; obj['Research Model'] = 'QB/RB/TE expansion';
+    obj.Availability = p.availability; obj.Season = season; obj.Week = week;
+    obj['Score Basis'] = 'Expansion ATD research index; 60+ screen; not calibrated against WR Confidence';
+    output.push(headers.map(k => obj[k] === undefined ? '' : obj[k]));
+  });
+  expansionWriteBoard_(ss,'Best Plays',headers,output);
+  sheet.getRange('A1').setNote('WR rows retain their original ordering and scores. Screened QB/RB/TE ATD rows follow, ordered by expansion index. Confidence carries different research models; neither is a probability. Availability is unverified unless explicitly supplied. Other prop markets are in Player Prop Research. Run buildExpandedBestPlays to refresh this combined board; buildBestPlays alone rebuilds WR only.');
+  const propHeaders = ['Season','Week','Position','Player','Team','Opponent','Game ID','Market','Research Score','Availability','Score Basis','Notes'];
+  expansionWriteBoard_(ss,'Player Prop Research',propHeaders,prepared.props.map(p => propHeaders.map(k => p[k])));
+  buildGameBestPlays();
+  console.log('EXPANDED BEST PLAYS BUILT: '+(output.length-prepared.atd.length)+' WR rows + '+prepared.atd.length+' expansion ATD rows (index >=60).');
+  console.log('PLAYER PROP RESEARCH: '+prepared.props.length+' market-specific rows. Passing TDs and yards stay outside ATD Best Plays.');
+  console.log('Game Best Plays rebuilt using existing ranking logic. Scores from different models are not calibrated against one another.');
+  console.log('No external sync performed. Original buildBestPlays remains WR-only; use buildExpandedBestPlays for the combined board.');
+}
+
+function expansionWriteBoard_(ss,name,headers,rows) {
+  let sheet = ss.getSheetByName(name);
+  if (!sheet) sheet = ss.insertSheet(name);
+  if (sheet.getFilter()) sheet.getFilter().remove();
+  sheet.clearContents();
+  if (sheet.getMaxColumns() < headers.length) sheet.insertColumnsAfter(sheet.getMaxColumns(),headers.length-sheet.getMaxColumns());
+  if (sheet.getMaxRows() < rows.length+1) sheet.insertRowsAfter(sheet.getMaxRows(),rows.length+1-sheet.getMaxRows());
+  sheet.getRange(1,1,1,headers.length).setValues([headers]).setFontWeight('bold').setBackground('#0d293f').setFontColor('#ffffff');
+  if (rows.length) {
+    sheet.getRange(2,1,rows.length,headers.length).setValues(rows);
+    sheet.getRange(1,1,rows.length+1,headers.length).createFilter();
+  }
+  sheet.setFrozenRows(1); sheet.autoResizeColumns(1,headers.length);
+  headers.forEach((k,i) => {
+    if (['Confidence','Matchup Score','Research Score'].includes(k) && rows.length) sheet.getRange(2,i+1,rows.length,1).setNumberFormat('0.0');
+    if (['Notes','Key Reason','Score Basis'].includes(k)) sheet.setColumnWidth(i+1,420);
+  });
+}
+
+function testExpandedBestPlays() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet(), season = Number(NFL.SEASON), week = Number(getCurrentWeek());
+  const matchups = expansionTable_(ss,'Player Research Matchups',['Season','Week','Position','Player','Team','Opponent']);
+  const expected = expansionIntegrationRows_(matchups,season,week);
+  const best = expansionTable_(ss,'Best Plays',['Position','Research Model','Availability','Season','Week','Play Type','Player','Team','Confidence']);
+  const props = expansionTable_(ss,'Player Prop Research',['Season','Week','Position','Market','Player','Team','Research Score','Availability']);
+  const expansion = best.filter(r => r['Research Model'] === 'QB/RB/TE expansion');
+  if (expansion.length !== expected.atd.length || props.length !== expected.props.length) throw new Error('Stale/missing integrated output; run buildExpandedBestPlays again.');
+  best.concat(props).forEach(r => {
+    if (Number(r.Season) !== season || Number(r.Week) !== week) throw new Error('Stale integrated season/week.');
+    if (!r.Availability) throw new Error('Missing availability label.');
+  });
+  expected.atd.forEach(p => {
+    const found = expansion.filter(r => r.Player === p.row.Player && normalizeNFLTeam(r.Team) === p.team);
+    if (found.length !== 1 || Number(found[0].Confidence) !== p.score || found[0]['Play Type'] !== p.row.Position+' Anytime TD') throw new Error('Incorrect ATD output: '+p.row.Player);
+  });
+  const seen = new Set();
+  props.forEach(r => {
+    const key = r.Player+'|'+normalizeNFLTeam(r.Team)+'|'+r.Market;
+    if (seen.has(key)) throw new Error('Duplicate prop: '+key);
+    seen.add(key);
+    const source = expected.props.find(p => p.Player === r.Player && p.Team === normalizeNFLTeam(r.Team) && p.Market === r.Market);
+    if (!source || source['Research Score'] !== Number(r['Research Score'])) throw new Error('Incorrect prop output: '+key);
+  });
+  console.log('WR rows retained: '+best.filter(r => r.Position === 'WR').length);
+  ['QB','RB','TE'].forEach(pos => {
+    const ranked = expansion.filter(r => r.Position === pos).sort((a,b) => Number(b.Confidence)-Number(a.Confidence));
+    console.log(pos+' ATD CANDIDATES: '+ranked.length);
+    ranked.slice(0,3).forEach(r => console.log(r.Player+' | '+r.Team+' vs '+r.Opponent+' | '+r.Confidence+' | '+r.Availability));
+  });
+  Array.from(new Set(props.map(r => r.Market))).sort().forEach(m => console.log(m+': '+props.filter(r => r.Market === m).length+' rows'));
+  console.log('EXPANDED BEST PLAYS VALIDATION COMPLETE: ATD-only main board; separate prop markets; availability labeled; no external sync.');
+}
