@@ -33,3 +33,15 @@ Replace `NFL Odds and Projections.gs` with its latest version. No new Script Pro
 The first 109 real DraftKings lines were captured immediately when tracking was installed. Later syncs append immutable observations; prior weeks remain available after the selected week changes. The report chooses the latest recorded paired pregame line before filtering candidate status, so repeated refreshes and earlier favorable lines are not counted as separate plays. Grading updates the same logical player/market/game result and rechecks recent completed games for stat corrections. Missing or ambiguous player stat rows stay ungraded.
 
 Statistical Over wins/losses/pushes compare final recorded totals to the saved line. This is not confirmation of sportsbook settlement, participation/void rules, or real placed bets. Hypothetical ROI risks one unit per graded over at its saved American price, with pushes returning the stake. Missing results are excluded. Historical point tests evaluate matching final stat rows and do not reconstruct historical injury or depth-chart exclusions. No historical sportsbook lines have been invented or paid historical-odds calls made.
+
+## Refresh odds from the app
+
+1. Replace `NFL Odds and Projections.gs` with the current version.
+2. Run `connectDraftKingsAppRefresh` once. It securely registers your existing Script Property key with the server and supplies game dates. It does not spend Odds API credits. No keys are exposed to the browser or written to GitHub.
+3. Use **Refresh DraftKings odds** in Research or Log Bet. App refresh is restricted to the account owner; repeated successful refreshes within five minutes reuse saved prices. Manual refreshes are capped at 12/day.
+
+The app refreshes the currently selected research week, updates O/U quotes and ATD prices atomically, and keeps the model's original build time. It does not rebuild projections or declare old model context fresh. Provider failures preserve the previous snapshot. It requests six markets per selected future game, so a full 15-game pull can use up to 90 credits. Empty market responses can cost less. Scheduled refreshes now include ATD prices too.
+
+Choosing a football player prefills fresh saved DraftKings anytime-TD odds if the odds field is empty. Refreshing does not overwrite a manually edited price. Switching to 2 TDs clears the prior market price and requires manual entry of the 2-TD price. Best Plays **Log ATD bet** opens a prepared form after an exact name/team match; bets are still logged only when you submit the form. Missing, stale, ambiguous or started-game prices are withheld. O/U research is refreshed on the same button; the existing football bet form remains ATD/2 TD.
+
+If your provider key changes, update `ODDS_API_KEY` and run `connectDraftKingsAppRefresh` again.
