@@ -4,24 +4,25 @@
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const n=v=>Number(v||0);
   const pct=v=>v==null?'—':`${(n(v)*100).toFixed(1)}%`;
-  const state={week:5,position:'WR',defenses:[],best:[],games:[],wr:[],props:[],details:[],defenseWeeks:[],bestPosition:'All',propPosition:'All',market:'Passing Yards'};
+  const state={week:5,position:'WR',defenses:[],best:[],games:[],wr:[],props:[],details:[],defenseWeeks:[],ou:[],bestPosition:'All',propPosition:'All',market:'Passing Yards'};
   function client(){return window.atdSupabase}
   async function latestWeek(){const{data,error}=await client().from('nfl_defense_targets').select('week').eq('season',2026).order('week',{ascending:false}).limit(1);if(error)throw error;return data?.[0]?.week||5}
   async function load(){
     const sb=client(); if(!sb)return;
     state.week=await latestWeek();
-    const [d,b,g,w,p,detail,dw]=await Promise.all([
+    const [d,b,g,w,p,detail,dw,ou]=await Promise.all([
       sb.from('nfl_defense_targets').select('*').eq('season',2026).eq('week',state.week).order('position').order('target_rank'),
       sb.from('nfl_best_plays').select('*').eq('season',2026).eq('week',state.week).order('confidence',{ascending:false}),
       sb.from('nfl_game_best_plays').select('*').eq('season',2026).eq('week',state.week).order('game_date').order('game_time').order('play_rank'),
       sb.from('nfl_wr_matchups').select('*').eq('season',2026).eq('week',state.week).order('matchup_score',{ascending:false}),
       sb.from('nfl_player_props').select('*').eq('season',2026).eq('week',state.week).order('research_score',{ascending:false}),
       sb.from('nfl_player_research_details').select('*').eq('season',2026).eq('week',state.week).order('player'),
-      sb.from('nfl_defense_weekly_tds').select('*').eq('season',2026).eq('target_week',state.week).order('game_week')
+      sb.from('nfl_defense_weekly_tds').select('*').eq('season',2026).eq('target_week',state.week).order('game_week'),
+      sb.from('nfl_player_ou').select('*').eq('season',2026).eq('week',state.week).order('player')
     ]);
     for(const x of [d,b,g,w])if(x.error)throw x.error;
-    state.defenses=d.data||[];state.best=b.data||[];state.games=g.data||[];state.wr=w.data||[];state.props=p.error?[]:(p.data||[]);state.details=detail.error?[]:(detail.data||[]);state.defenseWeeks=dw.error?[]:(dw.data||[]);
-    $('researchWeekLabel').textContent=`Week ${state.week}`;renderDefenses();renderBest();renderGames();renderWR();renderProps();renderDeepDive('RB');renderDeepDive('TE');$('researchStatus').textContent=p.error?'Prop research unavailable.':detail.error?'Production details unavailable.':'';
+    state.defenses=d.data||[];state.best=b.data||[];state.games=g.data||[];state.wr=w.data||[];state.props=p.error?[]:(p.data||[]);state.details=detail.error?[]:(detail.data||[]);state.defenseWeeks=dw.error?[]:(dw.data||[]);state.ou=ou.error?[]:(ou.data||[]);
+    $('researchWeekLabel').textContent=`Week ${state.week}`;renderDefenses();renderBest();renderGames();renderWR();renderProps();renderOU();renderDeepDive('RB');renderDeepDive('TE');$('researchStatus').textContent=p.error?'Prop research unavailable.':detail.error?'Production details unavailable.':'';
   }
   function renderDefenses(){
     const rows=state.defenses.filter(x=>x.position===state.position).slice(0,10);
@@ -44,6 +45,32 @@
     const rows=state.props.filter(x=>x.market===state.market&&(state.propPosition==='All'||x.position===state.propPosition));
     $('researchPropsCount').textContent=rows.length+' props';
     $('researchProps').innerHTML=rows.slice(0,30).map(x=>`<article class="research-play"><div><span class="research-score">${Math.round(n(x.research_score))}</span></div><div>${playerLink(x,'props',x.player+' · '+x.position)}<span>${esc(x.team)} vs ${esc(x.opponent)} · ${esc(x.market)}</span><small>Research score · ${esc(x.availability||'Unverified')}</small><small>${esc(explanation(x,x.market).reasons[0])}</small></div></article>`).join('')||'<div class="dashboard-empty">No synced research for this market and position.</div>';
+  }
+  function ouAssessment(x,now=Date.now()){
+    const q=x.quote,d=x.detail||{};
+    if(!q)return {status:'No paired DK line',promoted:false};
+    const age=now-Date.parse(q.last_update),fetched=now-Date.parse(q.fetched_at),context=now-Date.parse(d.context_checked_at),modelAge=now-Date.parse(x.updated_at);
+    if(!Number.isFinite(age)||age< -300000||age>6*3600000||!Number.isFinite(fetched)||fetched< -300000||fetched>6*3600000)return {status:'Odds need refresh',promoted:false};
+    if(Date.parse(q.commence_time)<=now)return {status:'Game started',promoted:false};
+    if(!Number.isFinite(context)||context< -300000||context>24*3600000||!Number.isFinite(modelAge)||modelAge>24*3600000)return {status:'Context needs refresh',promoted:false};
+    const gap=Number(x.projection)-Number(q.line),relative=gap/Math.max(Number(q.line),x.market==='Passing TD'||x.market==='Receptions'?1:10);
+    if(!d.eligible)return {status:'Workload / availability review',promoted:false,gap,relative};
+    const floor=x.market==='Passing TD'?0.25:x.market==='Receptions'?0.5:2;
+    const promoted=gap>=floor&&relative>=0.10;
+    return {status:promoted?'Projected over · experimental':gap>0?'Small projection gap':'Projection at / below line',promoted,gap,relative};
+  }
+  const breakEven=v=>Number(v)>0?100/(Number(v)+100):Math.abs(Number(v))/(Math.abs(Number(v))+100);
+  const american=v=>value(v)?(Number(v)>0?'+':'')+Number(v):'—';
+  function renderOU(){
+    const mode=$('researchOUFilter')?.value||'candidates',market=$('researchOUMarket')?.value||'All',position=$('researchOUPosition')?.value||'All';
+    const entries=state.ou.map(x=>({x,a:ouAssessment(x)})).filter(({x,a})=>(mode==='all'||a.promoted)&&(market==='All'||x.market===market)&&(position==='All'||x.position===position)).sort((a,b)=>(b.a.relative??-Infinity)-(a.a.relative??-Infinity)||String(a.x.player).localeCompare(String(b.x.player)));
+    $('researchOUCount').textContent=entries.length+(mode==='all'?' projections':' candidates');
+    $('researchOUList').innerHTML=entries.map(({x,a})=>{
+      const q=x.quote,d=x.detail||{};
+      return `<details class="research-ou-play"><summary><span><strong>${esc(x.player)} <span class="research-position-badge">${esc(x.position)}</span></strong><small>${esc(x.team)} vs ${esc(x.opponent)} · ${esc(x.market)}</small><small class="${a.promoted?'research-ou-highlight':''}">${esc(a.status)}</small></span><span class="research-metric"><strong>${fmt(x.projection)}</strong><small>Projected</small></span><span class="research-metric"><strong>${q?fmt(q.line):'—'}</strong><small>DK O/U</small></span><span class="research-metric"><strong>${value(a.gap)?(a.gap>0?'+':'')+fmt(a.gap):'—'}</strong><small>Gap</small></span></summary><div class="research-ou-body"><p>${esc(d.reason||'Production details unavailable.')}</p><p>DraftKings over ${american(q?.over_odds)} · under ${american(q?.under_odds)}${q?' · line '+fmt(q.line):''}. ${q?.last_update?'Book updated '+esc(new Date(q.last_update).toLocaleString()):'No fresh bookmaker timestamp.'}</p><p>${q?'Over price needs '+(breakEven(q.over_odds)*100).toFixed(1)+'% wins to break even, excluding pushes. ':''}${esc(x.availability)} · ${esc(x.role)}. ${q&&value(a.relative)?'Projection gap '+(a.relative*100).toFixed(1)+'%. ':''}No calibrated over-hit probability or betting-value estimate.</p></div></details>`;
+    }).join('')||`<div class="dashboard-empty">${!state.ou.length?'DraftKings projections have not been synced yet.':mode==='candidates'?'No projected overs pass the workload, freshness and projection-gap screens. Choose All projections to inspect the inputs.':'No projections match these filters.'}</div>`;
+    const paired=state.ou.filter(x=>x.quote).length;
+    $('researchOUStatus').textContent=state.ou.length?`${state.ou.length} projections · ${paired} paired DraftKings lines. Candidates require ≥10% projection gap and current data; sorted by percentage gap.`:'Awaiting the first odds refresh.';
   }
   function renderGames(){
     const by={};state.games.forEach(x=>(by[x.game_label]??=[]).push(x));
@@ -185,6 +212,7 @@
     $('openResearchBtn')?.addEventListener('click',show);$('researchBackBtn')?.addEventListener('click',back);
     document.querySelectorAll('.research-pos').forEach(b=>b.addEventListener('click',()=>{state.position=b.dataset.position;renderDefenses()}));
     $('researchBestPosition')?.addEventListener('change',e=>{state.bestPosition=e.target.value;renderBest()});
+    ['researchOUFilter','researchOUMarket','researchOUPosition'].forEach(id=>$(id)?.addEventListener('change',renderOU));
     $('researchPropPosition')?.addEventListener('change',e=>{state.propPosition=e.target.value;renderProps()});
     $('researchPropMarket')?.addEventListener('change',e=>{state.market=e.target.value;renderProps()});
     ['RB','TE'].forEach(pos=>{ $('research'+pos+'Search')?.addEventListener('input',()=>renderDeepDive(pos));$('research'+pos+'Availability')?.addEventListener('change',()=>renderDeepDive(pos)); });
