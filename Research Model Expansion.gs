@@ -52,6 +52,7 @@ function buildPlayerResearchExpansion() {
   };
 
   const players = mergeExpansionPlayers_(tables);
+  logExpansionQBCoverage_(players);
   const scored = scoreExpansionPlayers_(players);
   writeExpansionSheet_(ss, scored, season);
 
@@ -66,87 +67,98 @@ function buildPlayerResearchExpansion() {
 }
 
 function fetchFTNExpansionTable_(category, table) {
-  const url =
+  // Rushing qualification excludes low-volume rushers, including QBs.
+  // Keep the existing passing/receiving population unchanged.
+  const qualified = category !== 'rushing';
+  const base =
     'https://stats.ftnfantasy.com/api/v1/stats/categories/' +
-    encodeURIComponent(category) + '/tables/' +
-    encodeURIComponent(table) + '?season=' +
-    encodeURIComponent(NFL.SEASON) +
+    encodeURIComponent(category) + '/tables/' + encodeURIComponent(table) +
+    '?season=' + encodeURIComponent(NFL.SEASON) +
     '&seasonType=' + RESEARCH_EXPANSION.SEASON_TYPE +
-    '&qualified=true&page=1&pageSize=' + RESEARCH_EXPANSION.PAGE_SIZE;
-
-  const response = UrlFetchApp.fetch(url, {
-    method: 'get',
-    muteHttpExceptions: true,
-    headers: { Accept: 'application/json' }
-  });
-
-  const status = response.getResponseCode();
-  if (status !== 200) {
-    throw new Error(
-      'FTN request failed: ' + category + '/' + table +
-      ' (' + status + ') ' + response.getContentText().slice(0, 300)
-    );
+    '&qualified=' + qualified + '&pageSize=' + RESEARCH_EXPANSION.PAGE_SIZE;
+  const output = [], signatures = new Set();
+  for (let page = 1; page <= 40; page++) {
+    const response = UrlFetchApp.fetch(base + '&page=' + page, {
+      method: 'get', muteHttpExceptions: true, headers: { Accept: 'application/json' }
+    });
+    const status = response.getResponseCode();
+    if (status !== 200) throw new Error('FTN request failed: '+category+'/'+table+
+      ' page '+page+' ('+status+') '+response.getContentText().slice(0,300));
+    const json = JSON.parse(response.getContentText());
+    if (!json || !json.data || !Array.isArray(json.data.rows)) {
+      throw new Error('Unexpected FTN rows response: '+category+'/'+table);
+    }
+    const rows = json.data.rows;
+    if (!rows.length) break;
+    const signature = JSON.stringify(rows);
+    if (signatures.has(signature)) throw new Error('FTN pagination repeated a page: '+category+'/'+table);
+    signatures.add(signature);
+    output.push.apply(output,rows);
+    if (rows.length < RESEARCH_EXPANSION.PAGE_SIZE) break;
+    if (page === 40) throw new Error('FTN pagination limit reached: '+category+'/'+table);
   }
+  console.log(category+'/'+table+': '+output.length+' rows; qualified='+qualified+
+    '; QB rows='+output.filter(r => normalizePosition(r.position) === 'QB').length);
+  return output;
+}
 
-  const json = JSON.parse(response.getContentText());
-  const rows = json && json.data && Array.isArray(json.data.rows)
-    ? json.data.rows : [];
-
-  console.log(category + '/' + table + ': ' + rows.length + ' rows');
-  return rows;
+function expansionIdentityName_(row, position) {
+  const name = String(row.playerName || row.entityName || '').trim().toLowerCase()
+    .replace(/[.']/g,'').replace(/\s+/g,' ');
+  const team = normalizeNFLTeam(row.team || '');
+  return name && team ? name+'|'+position+'|'+team : '';
 }
 
 function mergeExpansionPlayers_(tables) {
-  const map = {};
-
-  function addRows(rows, prefix) {
+  const players = [], ids = {}, names = {};
+  function addRows(rows, source) {
     rows.forEach(row => {
       const position = normalizePosition(row.position);
-      if (!['QB', 'RB', 'TE'].includes(position)) return;
-
-      const id = String(row.playerId || row.entityId || row.playerName || '');
-      if (!id) return;
-
-      if (!map[id]) {
-        map[id] = {
-          playerId: row.playerId || row.entityId || '',
-          playerName: row.playerName || row.entityName || '',
-          team: row.team || '',
-          teamId: row.teamId || '',
-          position: position,
-          stats: {}
-        };
+      if (!['QB','RB','TE'].includes(position)) return;
+      const rawId = row.playerId || row.entityId || '';
+      const id = rawId === '' ? '' : String(rawId)+'|'+position;
+      const nameKey = expansionIdentityName_(row,position);
+      if (!id && !nameKey) return;
+      let player = id ? ids[id] : null;
+      // A name fallback requires matching position and normalized team.
+      // Never join on a short/display name alone.
+      if (!player && nameKey && names[nameKey]) player = names[nameKey];
+      if (player && nameKey && names[nameKey] && names[nameKey] !== player) {
+        throw new Error('Ambiguous FTN identity: '+nameKey+' in '+source);
       }
-
-      // Keep current identity values when present.
-      if (row.playerName) map[id].playerName = row.playerName;
-      if (row.team) map[id].team = row.team;
-      if (row.teamId) map[id].teamId = row.teamId;
-      map[id].position = position;
-
+      if (!player) {
+        player = {playerId:rawId, playerName:row.playerName || row.entityName || '',
+          team:row.team || '', teamId:row.teamId || '', position:position, stats:{}, sources:{}};
+        players.push(player);
+      }
+      if (id) ids[id] = player;
+      if (nameKey) names[nameKey] = player;
+      if (row.playerName || row.entityName) player.playerName = row.playerName || row.entityName;
+      if (row.team) player.team = row.team;
+      if (row.teamId) player.teamId = row.teamId;
+      player.sources[source] = true;
       Object.keys(row).forEach(key => {
-        if (key.indexOf('nfl.') === 0) {
-          map[id].stats[key] = row[key];
-        }
+        // Missing fields in another table must not erase populated values.
+        if (key.indexOf('nfl.') === 0 && numExpansion_(row[key]) !== null) player.stats[key] = row[key];
       });
     });
   }
+  Object.keys(tables).forEach(source => addRows(tables[source],source));
+  return players;
+}
 
-  addRows(tables.passOverview, 'passOverview');
-  addRows(tables.passEfficiency, 'passEfficiency');
-  addRows(tables.passAnalytics, 'passAnalytics');
-  addRows(tables.passPressure, 'passPressure');
-  addRows(tables.rushOverview, 'rushOverview');
-  addRows(tables.rushUsage, 'rushUsage');
-  addRows(tables.rushEfficiency, 'rushEfficiency');
-  addRows(tables.rushAnalytics, 'rushAnalytics');
-  addRows(tables.recUsage, 'recUsage');
-  addRows(tables.recOverview, 'recOverview');
-  addRows(tables.recEfficiency, 'recEfficiency');
-  addRows(tables.recAnalytics, 'recAnalytics');
-  addRows(tables.recAir, 'recAir');
-
-  return Object.values(map);
+function logExpansionQBCoverage_(players) {
+  const qbs = players.filter(p => p.position === 'QB');
+  console.log('QB COVERAGE: '+qbs.length+' merged QBs');
+  ['nfl.rushing.attempts','nfl.rushing.yards','nfl.rushing.touchdowns'].forEach(key => {
+    const covered = qbs.filter(p => numExpansion_(p.stats[key]) !== null);
+    console.log(key+': '+covered.length+'/'+qbs.length+' QBs');
+    const missing = qbs.filter(p => numExpansion_(p.stats[key]) === null);
+    if (missing.length) console.log('Missing '+key+': '+missing.map(p => p.playerName+' ('+p.team+')').join(', '));
+  });
+  qbs.forEach(p => console.log('QB SOURCE: '+p.playerName+' | '+p.team+' | rush attempts '+
+    valExpansion_(p.stats['nfl.rushing.attempts'])+' | rush TD '+valExpansion_(p.stats['nfl.rushing.touchdowns'])+
+    ' | '+Object.keys(p.sources || {}).join(', ')));
 }
 
 function scoreExpansionPlayers_(players) {
