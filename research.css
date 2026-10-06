@@ -18,3 +18,5 @@
 .research-ou-highlight{color:#15803d!important;font-weight:700}
 .research-ou-play>summary:focus-visible{outline:2px solid #008cc7;outline-offset:3px}
 @media(max-width:480px){.research-ou-play>summary{grid-template-columns:minmax(110px,1fr) repeat(3,44px);gap:5px}.research-ou-play>summary strong{font-size:13px}.research-ou-body{padding:10px}}
+
+.research-toolbar{flex-wrap:wrap}.research-toolbar #researchRefreshOddsBtn{font-size:12px;padding:9px 12px}
