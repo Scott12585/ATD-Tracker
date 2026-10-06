@@ -1010,7 +1010,7 @@ function expansionSyncPayload_(ss,season,week) {
     return {season:season,week:week,position:r.Position,player:r.Player,team:expansionSyncTeam_(r.Team),opponent:expansionSyncTeam_(r.Opponent),game_id:r['Game ID'] || null,
       market:r.Market,research_score:numExpansion_(r['Research Score']),availability:r.Availability || 'Unverified',score_basis:r['Score Basis'] || '',notes:r.Notes || ''};
   });
-  return {season:season,week:week,best_plays:best,game_best_plays:games,player_props:props};
+  return {season:season,week:week,best_plays:best,game_best_plays:games,player_props:props,player_details:buildExpansionProductionSyncRows_(ss,season,week)};
 }
 
 function syncExpandedNFLResearchToSupabase() {
@@ -1372,4 +1372,68 @@ function refreshExpandedNFLResearch() {
   } finally {
     lock.releaseLock();
   }
+}
+
+
+// Concrete production and positional opponent allowances for app explanations.
+function expansionProductionDetails_(audit,raw,schedule,season,week) {
+  const metrics={pass_yards:'passing_yards',rush_yards:'rushing_yards',rec_yards:'receiving_yards',pass_td:'passing_tds',rush_td:'rushing_tds',rec_td:'receiving_tds',attempts:'attempts',carries:'carries',targets:'targets',receptions:'receptions'};
+  const history={}, current={}, coverage={}, stats={}, grouped={}, duplicate=new Set();
+  schedule.filter(g=>Number(g.Season)===season).forEach(g=>{
+    const away=expansionSyncTeam_(g.Away),home=expansionSyncTeam_(g.Home),w=Number(g.Week);
+    if(w===week){current[away]=home;current[home]=away;}
+    if(w<1||w>=week||String(g.Status).toLowerCase()!=='final')return;
+    [[away,home],[home,away]].forEach(([team,opponent])=>{
+      if(!history[team])history[team]={};
+      if(history[team][w]&&history[team][w]!==opponent)throw new Error('Ambiguous production team/week '+team+' '+w);
+      history[team][w]=opponent;
+    });
+  });
+  raw.filter(r=>Number(r.season)===season&&Number(r.week)>0&&Number(r.week)<week&&(!r.season_type||r.season_type==='REG')).forEach(r=>{
+    const team=expansionSyncTeam_(r.recent_team||r.team),w=Number(r.week),pos=normalizePosition(r.position);
+    if(!history[team]?.[w]||!['QB','RB','WR','TE'].includes(pos))return;
+    const name=r.player_display_name||r.player_name||r.player;
+    if(!name)throw new Error('Production row missing player name: '+team+' week '+w);
+    const key=expansionNameKey_(name,team),id=String(r.player_id||r.gsis_id||key)+'|'+team+'|'+w;
+    if(duplicate.has(id))throw new Error('Duplicate production row '+id);duplicate.add(id);
+    coverage[team+'|'+w]=true;
+    if(!stats[key])stats[key]={};
+    const values={};Object.keys(metrics).forEach(k=>{values[k]=numExpansion_(r[metrics[k]]);});
+    if(stats[key][w])stats[key][w]={ambiguous:true};else stats[key][w]=values;
+    const groupKey=team+'|'+w+'|'+pos;
+    if(!grouped[groupKey])grouped[groupKey]={};
+    const group=grouped[groupKey];
+    Object.keys(metrics).forEach(k=>{
+      if(values[k]===null)group[k]=null;
+      else if(group[k]!==null)group[k]=(group[k]||0)+values[k];
+    });
+  });
+  const results=[],seen=new Set();
+  audit.forEach(p=>{
+    const team=expansionSyncTeam_(p.Team),opponent=current[team],key=expansionNameKey_(p.Player,team),pos=p.Position;
+    if(!opponent||seen.has(key))return;seen.add(key);
+    const weeks=Object.keys(history[team]||{}).map(Number).sort((a,b)=>b-a).slice(0,3),player=stats[key]||{};
+    function own(w,k){if(!coverage[team+'|'+w])return null;const row=player[w];return !row?0:row.ambiguous?null:row[k];}
+    const latest={},recent={};
+    Object.keys(metrics).forEach(k=>{
+      latest[k]=weeks.length?own(weeks[0],k):null;
+      const values=weeks.map(w=>own(w,k));
+      recent[k]=values.length&&values.every(v=>v!==null)?Math.round(values.reduce((a,b)=>a+b,0)/values.length*10)/10:null;
+    });
+    const defenseWeeks=Object.keys(history[opponent]||{}).map(Number),allowance={games:defenseWeeks.length};
+    const positionMetric={pass_yards:'QB',pass_td:'QB',rush_yards:pos,rec_yards:pos,rush_td:pos,rec_td:pos};
+    Object.entries(positionMetric).forEach(([metric,sourcePos])=>{
+      const values=defenseWeeks.map(w=>{const offense=history[opponent][w],group=grouped[offense+'|'+w+'|'+sourcePos];return group&&group[metric]!==undefined?group[metric]:null;});
+      allowance[metric]=values.length&&values.every(v=>v!==null)?Math.round(values.reduce((a,b)=>a+b,0)/values.length*10)/10:null;
+    });
+    results.push({season:season,week:week,player:p.Player,team:team,opponent:opponent,position:pos,detail:{latest_week:weeks[0]||null,recent_weeks:weeks,recent_games:weeks.length,latest:latest,recent:recent,defense:allowance,availability:p.Availability||'Unverified',role:p['Current Role']||'Role unverified',usage_trend:p['Usage Trend']||'Unknown',source:p['Status Source']||'Raw Player Stats + completed Schedule games',context_checked_at:p['Checked At']||null}});
+  });
+  return results;
+}
+function buildExpansionProductionSyncRows_(ss,season,week) {
+  const indexed=expansionAvailabilityRows_(ss,season,week);
+  if(!indexed)throw new Error('Build current availability before syncing production details.');
+  const raw=expansionTable_(ss,NFL.SHEETS.RAW_PLAYERS,['season','week','position','passing_yards','rushing_yards','receiving_yards','passing_tds','rushing_tds','receiving_tds']);
+  const schedule=expansionTable_(ss,NFL.SHEETS.SCHEDULE,['Season','Week','Away','Home','Status']);
+  return expansionProductionDetails_(Array.from(indexed.values()),raw,schedule,season,week);
 }
