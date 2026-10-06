@@ -53,6 +53,7 @@ function buildPlayerResearchExpansion() {
 
   const players = mergeExpansionPlayers_(tables);
   logExpansionQBCoverage_(players);
+  logExpansionCategoryCoverage_(players);
   const scored = scoreExpansionPlayers_(players);
   writeExpansionSheet_(ss, scored, season);
 
@@ -67,10 +68,9 @@ function buildPlayerResearchExpansion() {
 }
 
 function fetchFTNExpansionTable_(category, table) {
-  // Live logs show qualified=false excludes the qualified group.
-  // Combine both populations; mergeExpansionPlayers_ deduplicates players.
+  // Fetch both populations for every category; false selects the
+  // nonqualified group. The player merge deduplicates overlapping rows.
   const qualifiedRows = fetchFTNExpansionPopulation_(category, table, true);
-  if (category !== 'rushing') return qualifiedRows;
   const otherRows = fetchFTNExpansionPopulation_(category, table, false);
   console.log(category+'/'+table+': combining '+qualifiedRows.length+
     ' qualified and '+otherRows.length+' nonqualified rows');
@@ -423,7 +423,8 @@ function writeExpansionSheet_(ss, players, season) {
     'Receiving Score','Receiving TD Score','Receiving Yards Score',
     'Pass Yards','Pass TD','TD Throw Rate','EPA / Dropback','CPOE','Pressure Rate',
     'Rush Attempts','Rush Yards','Rush TD','Rush Attempt Share','Rush Opportunity Share','RYOE / Att',
-    'Targets','Receptions','Rec Yards','Rec TD','Target Share','Route Participation','First Read Rate','YPRR','WOPR','Air Yards Share'
+    'Targets','Receptions','Rec Yards','Rec TD','Target Share','Route Participation','First Read Rate','YPRR','WOPR','Air Yards Share',
+    'Pass Games','Rush Games','Receiving Games','Pass Attempts'
   ];
 
   const rows = players.map(p => {
@@ -444,10 +445,14 @@ function writeExpansionSheet_(ss, players, season) {
       valExpansion_(s['nfl.receiving.yards']),valExpansion_(s['nfl.receiving.touchdowns']),
       valExpansion_(s['nfl.receiving.target_share']),valExpansion_(s['nfl.receiving.route_participation']),
       valExpansion_(s['nfl.receiving.first_read_target_rate']),valExpansion_(s['nfl.receiving.yards_per_route_run']),
-      valExpansion_(s['nfl.receiving.wopr']),valExpansion_(s['nfl.receiving.air_yards_share'])
+      valExpansion_(s['nfl.receiving.wopr']),valExpansion_(s['nfl.receiving.air_yards_share']),
+      valExpansion_(s['nfl.passing.games']),valExpansion_(s['nfl.rushing.games']),
+      valExpansion_(s['nfl.receiving.games']),valExpansion_(s['nfl.passing.attempts'])
     ];
   });
 
+  if (sheet.getMaxColumns() < headers.length) sheet.insertColumnsAfter(sheet.getMaxColumns(),headers.length-sheet.getMaxColumns());
+  if (sheet.getMaxRows() < rows.length+1) sheet.insertRowsAfter(sheet.getMaxRows(),rows.length+1-sheet.getMaxRows());
   sheet.getRange(1,1,1,headers.length).setValues([headers]);
   if (rows.length) sheet.getRange(2,1,rows.length,headers.length).setValues(rows);
 
@@ -551,7 +556,7 @@ function buildPlayerResearchMatchups() {
   if (!Number.isInteger(week) || week < 1 || week > 18) throw new Error('Select a regular-season week (1–18) in Settings!B3.');
   const season = Number(NFL.SEASON);
   const players = expansionTable_(ss, RESEARCH_EXPANSION.SHEET,
-    ['Season','Position','Player','Team','Pass TD Score','Pass Yards Score','Rush TD Score','Rush Yards Score','Receiving TD Score','Receiving Yards Score']);
+    ['Season','Position','Player','Team','Pass TD Score','Pass Yards Score','Rush TD Score','Rush Yards Score','Receiving TD Score','Receiving Yards Score','Pass Games','Rush Games','Receiving Games','Pass Attempts']);
   const schedule = expansionTable_(ss, NFL.SHEETS.SCHEDULE,
     ['Season','Week','Away','Home','Game ID','Status','Date','Time ET']);
   const logs = expansionTable_(ss, NFL.SHEETS.GAME_LOG,
@@ -568,7 +573,8 @@ function buildPlayerResearchMatchups() {
     'Anytime TD Score','Pass TD Score','Pass Yards Score','Rush TD Score','Rush Yards Score','Receiving TD Score','Receiving Yards Score',
     'Base Pass TD','Base Pass Yards','Base Rush TD','Base Rush Yards','Base Receiving TD','Base Receiving Yards',
     'Defense Pass TD Index','Defense Pass Yards Index','Defense Position Rush TD Index','Defense Position Rush Yards Index',
-    'Defense Position Rec TD Index','Defense Position Rec Yards Index','Notes'];
+    'Defense Position Rec TD Index','Defense Position Rec Yards Index',
+    'Pass Workload','Rush Workload','Receiving Workload','Availability','Notes'];
   let sheet = ss.getSheetByName('Player Research Matchups');
   if (!sheet) sheet = ss.insertSheet('Player Research Matchups');
   if (sheet.getFilter()) sheet.getFilter().remove();
@@ -715,7 +721,12 @@ function expansionWeeklyRows_(players, context, season, week) {
     });
     row['Anytime TD Score'] = pos === 'QB' ? row['Rush TD Score'] : pos === 'TE' ? row['Receiving TD Score'] : weightedExpansionScore_([
       {value:numExpansion_(row['Rush TD Score']),weight:70},{value:numExpansion_(row['Receiving TD Score']),weight:30}]);
-    row.Notes = 'Research index; current FTN snapshot; verify availability.' + (pos === 'QB' ? ' ATD uses rushing only; passing TDs are separate.' : '') +
+    const workload = expansionWorkload_(p);
+    row['Pass Workload'] = workload.pass;
+    row['Rush Workload'] = workload.rush;
+    row['Receiving Workload'] = workload.receiving;
+    row.Availability = 'Unverified';
+    row.Notes = 'Research index; current FTN snapshot; availability unverified. Workload checks are heuristic screening, not confirmed roles.' + (pos === 'QB' ? ' ATD uses rushing only; passing TDs are separate.' : '') +
       (missing.length ? ' Neutral defense fallback: '+missing.join(', ')+'.' : '');
     rows.push(row);
   });
@@ -735,12 +746,60 @@ function testPlayerResearchMatchups() {
   ['QB','RB','TE'].forEach(pos => {
     console.log('----------------------------------------');
     scoreFields.forEach(field => {
-      const ranked = rows.filter(r => r.Position === pos && numExpansion_(r[field]) !== null).sort((a,b) => Number(b[field])-Number(a[field])).slice(0,5);
+      const ranked = rows.filter(r => r.Position === pos && numExpansion_(r[field]) !== null && expansionMarketWorkloadOK_(r,field)).sort((a,b) => Number(b[field])-Number(a[field])).slice(0,5);
       if (!ranked.length) return;
-      console.log(pos+' TOP 5 — '+field.toUpperCase());
+      console.log(pos+' TOP 5 — '+field.toUpperCase()+' (WORKLOAD SCREEN PASSED; AVAILABILITY UNVERIFIED)');
       ranked.forEach(r => console.log(r.Player+' | '+r.Team+' vs '+r.Opponent+' | '+r[field]+' | defense games '+r['Defense Games']));
     });
   });
+  console.log('Rows passing ATD workload screen: '+rows.filter(r => expansionMarketWorkloadOK_(r,'Anytime TD Score')).length+'/'+rows.length);
   console.log('Neutral defense fallback rows: '+rows.filter(r => String(r.Notes).includes('fallback')).length+'/'+rows.length);
   console.log('MATCHUP VALIDATION COMPLETE — research indices, not probabilities; check injury/role status before integration.');
+}
+
+/***************************************************************
+ * COVERAGE AND WORKLOAD SCREENING
+ * Heuristic thresholds, not trained/calibrated betting cutoffs.
+ * All research rows remain visible; validation top lists exclude
+ * low/unknown workload. Availability is never inferred from stats.
+ ***************************************************************/
+function logExpansionCategoryCoverage_(players) {
+  const checks = [
+    ['QB','nfl.passing.attempts'],['QB','nfl.passing.yards'],
+    ['QB','nfl.rushing.attempts'],['RB','nfl.rushing.attempts'],
+    ['RB','nfl.receiving.targets'],['TE','nfl.receiving.targets']
+  ];
+  checks.forEach(pair => {
+    const group = players.filter(p => p.position === pair[0]);
+    const covered = group.filter(p => numExpansion_(p.stats[pair[1]]) !== null);
+    console.log('CATEGORY COVERAGE '+pair[0]+' '+pair[1]+': '+covered.length+'/'+group.length);
+    const missing = group.filter(p => numExpansion_(p.stats[pair[1]]) === null);
+    if (missing.length) console.log('Missing '+pair[1]+': '+missing.map(p => p.playerName).join(', '));
+  });
+}
+
+function expansionWorkload_(p) {
+  function check(total, games, threshold) {
+    const count = numExpansion_(total), n = numExpansion_(games);
+    if (count === null || n === null || n <= 0) return 'Unknown';
+    if (n < 2 || count/n < threshold) return 'Low';
+    return 'Screen passed';
+  }
+  return {
+    pass: p.Position === 'QB' ? check(p['Pass Attempts'],p['Pass Games'],10) : 'N/A',
+    rush: ['QB','RB'].includes(p.Position) ? check(p['Rush Attempts'],p['Rush Games'],p.Position === 'QB' ? 3 : 5) : 'N/A',
+    receiving: ['RB','TE'].includes(p.Position) ? check(p.Targets,p['Receiving Games'],2) : 'N/A'
+  };
+}
+
+function expansionMarketWorkloadOK_(row, field) {
+  if (field === 'Anytime TD Score') {
+    if (row.Position === 'QB') return row['Rush Workload'] === 'Screen passed';
+    if (row.Position === 'TE') return row['Receiving Workload'] === 'Screen passed';
+    return row['Rush Workload'] === 'Screen passed' || row['Receiving Workload'] === 'Screen passed';
+  }
+  if (field.indexOf('Pass') === 0) return row['Pass Workload'] === 'Screen passed';
+  if (field.indexOf('Rush') === 0) return row['Rush Workload'] === 'Screen passed';
+  if (field.indexOf('Receiving') === 0) return row['Receiving Workload'] === 'Screen passed';
+  return false;
 }
