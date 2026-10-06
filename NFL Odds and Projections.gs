@@ -57,7 +57,7 @@ function nflOUProjectionRows_(audit,raw,schedule,season,week) {
       const threshold=pos==='QB'&&m.volume==='carries'?3:pos==='WR'&&m.volume==='targets'?3:m.minimum;
       const eligible=active&&roleOK&&recent.length>=3&&recentVolume>=threshold&&complete&&dg>=2;
       const reason=p.Player+' averaged '+(rt/recent.length).toFixed(1)+' '+m.label.toLowerCase()+' on '+recentVolume.toFixed(1)+' '+m.volume+'/game over the last '+recent.length+' team games. '+opponent+' allowed '+(defenseAvg===null?'unknown':defenseAvg.toFixed(1))+' '+m.label.toLowerCase()+'/game to all '+pos+'s. Projected '+projection.toFixed(1)+' using blended workload and efficiency, with a '+((factor-1)*100).toFixed(1)+'% opponent adjustment.';
-      output.push({season:season,week:week,player:p.Player,team:team,opponent:opponent,position:pos,market:m.label,market_key:market,projection:Math.round(projection*100)/100,availability:p.Availability||'Unverified',role:p['Current Role']||'Role unverified',model:'workload-efficiency-v1',detail:{recent_games:recent.length,recent_average:rt/recent.length,recent_volume:recentVolume,projected_volume:volume,efficiency:efficiency,defense_games:dg,defense_average:defenseAvg,defense_factor:factor,eligible:eligible,context_checked_at:p['Checked At']||null,reason:reason},quote:null});
+      output.push({season:season,week:week,player:p.Player,team:team,opponent:opponent,position:pos,market:m.label,market_key:market,projection:Math.round(projection*100)/100,availability:p.Availability||'Unverified',role:p['Current Role']||'Role unverified',model:'workload-efficiency-v1',detail:{recent_games:recent.length,recent_average:rt/recent.length,recent_volume:recentVolume,projected_volume:volume,efficiency:efficiency,defense_games:dg,defense_average:defenseAvg,defense_factor:factor,eligible:eligible,context_checked_at:p['Checked At']||null,projection_built_at:new Date().toISOString(),game_date:nflOUDate_(schedule.find(g=>Number(g.Season)===season&&Number(g.Week)===week&&[expansionSyncTeam_(g.Away),expansionSyncTeam_(g.Home)].includes(team))?.Date||''),reason:reason},quote:null});
     });
   });
   return output;
@@ -123,16 +123,21 @@ function refreshNFLPlayerOddsAndProjections_(){
   const quotes=[];
   selected.forEach(e=>{
     if(Date.now()-started>90000)throw new Error('Odds refresh time limit reached; previous snapshot preserved.');
-    const result=nflOUApi_('events/'+encodeURIComponent(e.id)+'/odds?bookmakers=draftkings&markets='+Object.keys(NFL_OU_MARKETS).join(',')+'&oddsFormat=american',key);
+    const result=nflOUApi_('events/'+encodeURIComponent(e.id)+'/odds?bookmakers=draftkings&markets='+Object.keys(NFL_OU_MARKETS).concat('player_anytime_td').join(',')+'&oddsFormat=american',key);
     result._fetched_at=new Date().toISOString();quotes.push(result);
   });
   const joined=nflOUJoinQuotes_(projections,quotes,now);
+  const identities=Array.from(audit.values()).map(p=>{
+    const team=expansionSyncTeam_(p.Team),g=games.find(g=>[expansionSyncTeam_(g.Away),expansionSyncTeam_(g.Home)].includes(team));
+    return {player:p.Player,team:team,opponent:g?(expansionSyncTeam_(g.Away)===team?expansionSyncTeam_(g.Home):expansionSyncTeam_(g.Away)):'',position:p.Position};
+  });
+  const atd=nflOUATDQuotes_(identities,quotes,season,week,Date.now());
   if(Number(getCurrentWeek())!==week||Number(NFL.SEASON)!==season)throw new Error('Selected season/week changed during odds refresh.');
   const base=String(properties.getProperty('SUPABASE_URL')||'').replace(/\/$/,''),anon=properties.getProperty('SUPABASE_ANON_KEY'),token=properties.getProperty('NFL_RESEARCH_SYNC_TOKEN');
   if(!base||!anon||!token)throw new Error('Supabase sync properties missing.');
-  const response=UrlFetchApp.fetch(base+'/functions/v1/atd-expanded-research-sync',{method:'post',contentType:'application/json',muteHttpExceptions:true,headers:{apikey:anon,Authorization:'Bearer '+anon,'x-research-sync-token':token},payload:JSON.stringify({season:season,week:week,ou_projections:joined.rows})});
+  const response=UrlFetchApp.fetch(base+'/functions/v1/atd-expanded-research-sync',{method:'post',contentType:'application/json',muteHttpExceptions:true,headers:{apikey:anon,Authorization:'Bearer '+anon,'x-research-sync-token':token},payload:JSON.stringify({season:season,week:week,ou_projections:joined.rows,atd_odds:atd.rows})});
   if(response.getResponseCode()!==200)throw new Error('O/U sync HTTP '+response.getResponseCode()+' '+response.getContentText());
-  console.log('DRAFTKINGS O/U SYNC COMPLETE: '+projections.length+' projections; '+projections.filter(p=>p.quote).length+' paired lines; '+joined.unmatched+' unmatched outcomes. No calibrated hit probabilities or value claims.');
+  console.log('DRAFTKINGS O/U SYNC COMPLETE: '+projections.length+' projections; '+projections.filter(p=>p.quote).length+' paired lines; '+atd.rows.length+' ATD prices; '+joined.unmatched+' unmatched outcomes. No calibrated hit probabilities or value claims.');
   const headers=['Season','Week','Position','Player','Team','Opponent','Market','Projection','DK Line','Over Odds','Under Odds','Availability','Reason'];
   expansionWriteBoard_(ss,'Player OU Projections',headers,projections.map(p=>[season,week,p.position,p.player,p.team,p.opponent,p.market,p.projection,p.quote?.line??'',p.quote?.over_odds??'',p.quote?.under_odds??'',p.availability,p.detail.reason]));
 }
@@ -225,4 +230,29 @@ function testHistoricalNFLPlayerProjections(){
 }
 function nflOUBacktestReport_(stats,season,throughWeek){
   return Object.entries(stats).map(([market,r])=>({season:season,market:market,model:'workload-efficiency-v1',samples:r.samples,mae:r.absolute/r.samples,bias:r.bias/r.samples,recent_baseline_mae:r.baseline_absolute/r.samples,evaluated_through_week:throughWeek,source:'nflverse completed weekly REG games; strictly earlier-week inputs; matched-stat-row evaluation; no historical injury/roster reconstruction or sportsbook lines'}));
+}
+
+// One-time private connection; does not request odds or spend provider credits.
+function connectDraftKingsAppRefresh(){
+ const p=PropertiesService.getScriptProperties(),key=p.getProperty('ODDS_API_KEY');
+ if(!key)throw new Error('ODDS_API_KEY is missing in Script Properties.');
+ const ss=SpreadsheetApp.getActiveSpreadsheet(),season=Number(NFL.SEASON),week=Number(getCurrentWeek());
+ const games=expansionTable_(ss,NFL.SHEETS.SCHEDULE,['Season','Week','Date','Away','Home']).filter(g=>Number(g.Season)===season&&Number(g.Week)===week).map(g=>({away:expansionSyncTeam_(g.Away),home:expansionSyncTeam_(g.Home),date:nflOUDate_(g.Date)}));
+ const response=nflOUResearchRequest_({action:'connect_odds_app',api_key:key,season:season,week:week,games:games});
+ console.log(response.connected?'DRAFTKINGS APP REFRESH CONNECTED: private key registered; no Odds API credits used.':'App odds connection was not confirmed.');
+}
+function nflOUATDQuotes_(players,events,season,week,now){
+ const identities=new Map();players.forEach(p=>identities.set(p.player+'|'+p.team,p));
+ const rows=[],seen=new Set(),ambiguous=new Set();let unmatched=0;
+ for(const e of events){const fetched=Date.parse(e._fetched_at)||now;if(Date.parse(e.commence_time)<=fetched)continue;
+  const home=nflOUTeam_(e.home_team),away=nflOUTeam_(e.away_team),book=(e.bookmakers||[]).find(b=>b.key==='draftkings');if(!book)continue;
+  for(const m of book.markets||[]){if(m.key!=='player_anytime_td')continue;
+   for(const o of m.outcomes||[]){if(o.name!=='Yes'||!o.description||!Number.isInteger(o.price)||Math.abs(o.price)<100)continue;
+    const candidates=[...identities.values()].filter(p=>nflOUName_(p.player)===nflOUName_(o.description)&&[home,away].includes(p.team)&&p.opponent===(p.team===home?away:home));
+    if(candidates.length!==1){unmatched++;continue;}const p=candidates[0],id=p.player+'|'+p.team;if(seen.has(id)){ambiguous.add(id);continue;}seen.add(id);
+    rows.push({season:season,week:week,player:p.player,team:p.team,opponent:p.opponent,position:p.position,quote:{bookmaker:'draftkings',price:o.price,event_id:e.id,commence_time:e.commence_time,last_update:m.last_update||book.last_update||null,fetched_at:new Date(fetched).toISOString()},updated_at:new Date(now).toISOString()});
+   }
+  }
+ }
+ return {rows:rows.filter(p=>!ambiguous.has(p.player+'|'+p.team)),unmatched:unmatched};
 }
