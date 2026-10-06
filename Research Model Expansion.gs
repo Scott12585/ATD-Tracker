@@ -1010,7 +1010,7 @@ function expansionSyncPayload_(ss,season,week) {
     return {season:season,week:week,position:r.Position,player:r.Player,team:expansionSyncTeam_(r.Team),opponent:expansionSyncTeam_(r.Opponent),game_id:r['Game ID'] || null,
       market:r.Market,research_score:numExpansion_(r['Research Score']),availability:r.Availability || 'Unverified',score_basis:r['Score Basis'] || '',notes:r.Notes || ''};
   });
-  return {season:season,week:week,best_plays:best,game_best_plays:games,player_props:props,player_details:buildExpansionProductionSyncRows_(ss,season,week)};
+  return {season:season,week:week,best_plays:best,game_best_plays:games,player_props:props,player_details:buildExpansionProductionSyncRows_(ss,season,week),defense_weeks:buildExpansionDefenseWeekSyncRows_(ss,season,week)};
 }
 
 function syncExpandedNFLResearchToSupabase() {
@@ -1436,4 +1436,36 @@ function buildExpansionProductionSyncRows_(ss,season,week) {
   const raw=expansionTable_(ss,NFL.SHEETS.RAW_PLAYERS,['season','week','position','passing_yards','rushing_yards','receiving_yards','passing_tds','rushing_tds','receiving_tds']);
   const schedule=expansionTable_(ss,NFL.SHEETS.SCHEDULE,['Season','Week','Away','Home','Status']);
   return expansionProductionDetails_(Array.from(indexed.values()),raw,schedule,season,week);
+}
+
+
+function expansionDefenseWeekRows_(raw,schedule,season,week) {
+  const games={},grouped={},seen=new Set();
+  schedule.filter(g=>Number(g.Season)===season&&Number(g.Week)>0&&Number(g.Week)<week&&String(g.Status).toLowerCase()==='final').forEach(g=>{
+    const w=Number(g.Week),away=expansionSyncTeam_(g.Away),home=expansionSyncTeam_(g.Home);
+    [[away,home],[home,away]].forEach(([defense,offense])=>{const key=defense+'|'+w;if(games[key])throw new Error('Duplicate defense/week '+key);games[key]={week:w,defense:defense,offense:offense};});
+  });
+  raw.filter(r=>Number(r.season)===season&&Number(r.week)>0&&Number(r.week)<week&&(!r.season_type||r.season_type==='REG')).forEach(r=>{
+    const team=expansionSyncTeam_(r.recent_team||r.team),w=Number(r.week),pos=normalizePosition(r.position);
+    if(!games[team+'|'+w]||!['QB','RB','WR','TE'].includes(pos))return;
+    const id=String(r.player_id||r.gsis_id||r.player_display_name||r.player_name||'');
+    if(!id)throw new Error('Unidentified weekly TD source row');
+    const identity=id+'|'+team+'|'+w;if(seen.has(identity))throw new Error('Duplicate weekly TD stats '+identity);seen.add(identity);
+    const key=team+'|'+w+'|'+pos;if(!grouped[key])grouped[key]={};
+    ['passing_tds','rushing_tds','receiving_tds'].forEach(metric=>{
+      const v=numExpansion_(r[metric]);
+      if(v===null)grouped[key][metric]=null;
+      else if(v<0||!Number.isInteger(v))throw new Error('Invalid weekly TD count');
+      else if(grouped[key][metric]!==null)grouped[key][metric]=(grouped[key][metric]||0)+v;
+    });
+  });
+  return Object.values(games).sort((a,b)=>a.defense.localeCompare(b.defense)||a.week-b.week).map(g=>{
+    function td(pos,metric){const row=grouped[g.offense+'|'+g.week+'|'+pos];return row&&row[metric]!==undefined?row[metric]:null;}
+    return {season:season,target_week:week,game_week:g.week,defense:g.defense,opponent:g.offense,tds:{qb_rush_td:td('QB','rushing_tds'),rb_rush_td:td('RB','rushing_tds'),rb_rec_td:td('RB','receiving_tds'),wr_rec_td:td('WR','receiving_tds'),te_rec_td:td('TE','receiving_tds'),pass_td:td('QB','passing_tds')}};
+  });
+}
+function buildExpansionDefenseWeekSyncRows_(ss,season,week) {
+  const raw=expansionTable_(ss,NFL.SHEETS.RAW_PLAYERS,['season','week','position','passing_tds','rushing_tds','receiving_tds']);
+  const schedule=expansionTable_(ss,NFL.SHEETS.SCHEDULE,['Season','Week','Away','Home','Status']);
+  return expansionDefenseWeekRows_(raw,schedule,season,week);
 }
