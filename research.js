@@ -41,7 +41,7 @@
     const rows=state.best.filter(x=>state.bestPosition==='All'||positionOf(x)===state.bestPosition)
       .sort((a,b)=>n(b.confidence)-n(a.confidence)||String(a.player).localeCompare(String(b.player)));
     $('researchBestCount').textContent=rows.length+' plays';
-    $('researchBestPlays').innerHTML=rows.map((x,i)=>`<article class="research-play"><div><small class="research-list-rank">#${i+1}</small><span class="research-score">${Math.round(n(x.confidence))}</span></div><div>${playerLink(x,'best')}<span><span class="research-position-badge">${esc(positionOf(x))}</span> ${esc(x.team)} vs ${esc(x.opponent)} · Anytime TD</span><small>Research score · ${esc(x.availability||'Unverified')}</small><small>${esc(explanation(x,'Anytime TD').reasons[0])}</small></div></article>`).join('')||'<div class="dashboard-empty">No qualifying plays.</div>';
+    $('researchBestPlays').innerHTML=rows.map((x,i)=>`<article class="research-play"><div><small class="research-list-rank">#${i+1}</small><span class="research-score">${Math.round(n(x.confidence))}</span></div><div>${playerLink(x,'best')}<span><span class="research-position-badge">${esc(positionOf(x))}</span> ${esc(x.team)} vs ${esc(x.opponent)} · Anytime TD</span><small>Research score · ${esc(x.availability||'Unverified')}</small><small>${esc(explanation(x,'Anytime TD').reasons[0])}</small><button type="button" class="text-btn" data-log-atd-index="${state.best.indexOf(x)}">Log ATD bet ›</button></div></article>`).join('')||'<div class="dashboard-empty">No qualifying plays.</div>';
   }
   function renderProps(){
     const rows=state.props.filter(x=>x.market===state.market&&(state.propPosition==='All'||x.position===state.propPosition));
@@ -51,7 +51,7 @@
   function ouAssessment(x,now=Date.now()){
     const q=x.quote,d=x.detail||{};
     if(!q)return {status:'No paired DK line',promoted:false};
-    const age=now-Date.parse(q.last_update),fetched=now-Date.parse(q.fetched_at),context=now-Date.parse(d.context_checked_at),modelAge=now-Date.parse(x.updated_at);
+    const age=now-Date.parse(q.last_update),fetched=now-Date.parse(q.fetched_at),context=now-Date.parse(d.context_checked_at),modelAge=now-Date.parse(d.projection_built_at||x.updated_at);
     if(!Number.isFinite(age)||age< -300000||age>6*3600000||!Number.isFinite(fetched)||fetched< -300000||fetched>6*3600000)return {status:'Odds need refresh',promoted:false};
     if(Date.parse(q.commence_time)<=now)return {status:'Game started',promoted:false};
     if(!Number.isFinite(context)||context< -300000||context>24*3600000||!Number.isFinite(modelAge)||modelAge>24*3600000)return {status:'Context needs refresh',promoted:false};
@@ -218,6 +218,8 @@
       const row=state[source][Number(button.dataset.detailIndex)];
       if(row)openPlayer(row,source==='props'?row.market:source==='wr'?'WR Matchup':'Anytime TD');
     }
+    $('researchRefreshOddsBtn')?.addEventListener('click',async()=>{const button=$('researchRefreshOddsBtn');button.disabled=true;$('researchStatus').textContent='Refreshing DraftKings…';try{const result=await window.atdRefreshDraftKingsOdds({season:2026,week:state.week});await load();$('researchStatus').textContent=(result.message||'DraftKings refreshed.')+(result.remaining!=null?' '+result.remaining+' credits remaining.':'');}catch(e){$('researchStatus').textContent=e.message;}finally{button.disabled=false}});
+    $('researchView')?.addEventListener('click',async event=>{const button=event.target.closest('[data-log-atd-index]');if(!button)return;button.disabled=true;try{const row=state.best[Number(button.dataset.logAtdIndex)];if(row)await window.atdPrepareResearchBet({...row,week:state.week,season:2026});}catch(e){$('researchStatus').textContent=e.message;}finally{button.disabled=false}});
     $('openResearchBtn')?.addEventListener('click',show);$('researchBackBtn')?.addEventListener('click',back);
     document.querySelectorAll('.research-pos').forEach(b=>b.addEventListener('click',()=>{state.position=b.dataset.position;renderDefenses()}));
     $('researchBestPosition')?.addEventListener('change',e=>{state.bestPosition=e.target.value;renderBest()});
