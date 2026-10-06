@@ -14,6 +14,12 @@ Deno.serve(async (req: Request) => {
     for(let i=0;i<hash.length;i++) difference |= hash.charCodeAt(i)^(config.token_hash.charCodeAt(i)||0);
     if(difference!==0) return reply({error:"Invalid sync token"},401);
     const body=await req.json();
+    if(body.action==='connect_odds_app') {
+      if(typeof body.api_key!=='string'||!/^[A-Za-z0-9_-]{16,256}$/.test(body.api_key)||!Number.isInteger(body.season)||body.season<2020||body.season>2100||!Number.isInteger(body.week)||body.week<1||body.week>18||!Array.isArray(body.games)||!body.games.length||body.games.length>16||body.games.some(g=>!g||!g.away||!g.home||!/^\d{4}-\d{2}-\d{2}$/.test(g.date))) return reply({error:'Invalid odds connection configuration'},400);
+      const {data,error}=await supabase.rpc('connect_nfl_odds_app',{p_key:body.api_key,p_season:body.season,p_week:body.week,p_games:body.games});
+      if(error)throw new Error('Could not connect odds refresh. Verify the owner settings.');
+      return reply(data);
+    }
     if(body.action==='ou_pending') {
       if(!Number.isInteger(body.season)||body.season<2020||body.season>2100) return reply({error:'Invalid tracking season'},400);
       const {data,error}=await supabase.rpc('nfl_ou_pending',{p_season:body.season});
@@ -47,8 +53,10 @@ Deno.serve(async (req: Request) => {
           if(!q||q.bookmaker!=='draftkings'||!q.event_id||!Number.isFinite(Date.parse(q.commence_time))||typeof q.line!=='number'||!Number.isFinite(q.line)||q.line<0||q.line>=10000||[q.over_odds,q.under_odds].some(v=>typeof v!=='number'||!Number.isInteger(v)||Math.abs(v)<100)||!Number.isFinite(Date.parse(q.fetched_at))||q.last_update!==null&&!Number.isFinite(Date.parse(q.last_update))) return reply({error:"Invalid DraftKings quote"},400);
         }
       }
+      if(body.atd_odds!==undefined&&(!Array.isArray(body.atd_odds)||body.atd_odds.length>2000||body.atd_odds.some(r=>!r||r.season!==season||r.week!==week||!r.player||!r.team||!r.opponent||!['QB','RB','WR','TE'].includes(r.position)||!r.quote||r.quote.bookmaker!=='draftkings'||!Number.isInteger(r.quote.price)||Math.abs(r.quote.price)<100||!r.quote.event_id||!Number.isFinite(Date.parse(r.quote.commence_time))||!Number.isFinite(Date.parse(r.quote.fetched_at)))))return reply({error:'Invalid ATD odds'},400);
       const stamped=ou_projections.map(r=>({...r,updated_at:new Date().toISOString()}));
-      const {data,error}=await supabase.rpc('replace_nfl_player_ou',{p_season:season,p_week:week,p_rows:stamped});
+      const args={p_season:season,p_week:week,p_rows:stamped,...(body.atd_odds!==undefined?{p_atd:body.atd_odds.map(r=>({...r,updated_at:new Date().toISOString()}))}:{})};
+      const {data,error}=await supabase.rpc(body.atd_odds!==undefined?'replace_nfl_ou_with_atd':'replace_nfl_player_ou',args);
       if(error)throw error;
       return reply({ok:true,season,week,...data});
     }
