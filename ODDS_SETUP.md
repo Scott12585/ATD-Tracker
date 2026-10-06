@@ -22,3 +22,14 @@ Projected workload = 65% last-three-team-game volume + 35% season volume. Projec
 Promotion screens: three recent team games, workload minimum (QB pass 10 attempts/G, QB rush 3 carries/G, RB rush 5 carries/G, WR targets 3/G, RB/TE targets 2/G), active roster, listed starter for QBs, at least two complete defensive games, context within 24 hours, odds fetched and bookmaker-updated within six hours, future kickoff, projection gap at least 10% of the line and at least 2 yards / 0.5 receptions / 0.25 passing TD. Candidate order is relative projection gap, not expected value. Game-day availability remains unverified.
 
 These are **experimental point projections**, not calibrated over-hit probabilities. A point estimate above a line does not establish a >50% over probability, and the price must be considered before making a value claim. The board shows the price's break-even win rate, but does not invent a model hit probability. Rolling diagnostics use only earlier-week stats and report MAE and bias; they do not report over win rate or ROI without historical sportsbook lines.
+
+## Saved-line tracking and historical tests
+
+Replace `NFL Odds and Projections.gs` with its latest version. No new Script Properties or triggers are required. Future existing research refreshes grade saved observations against final imported stats before pulling new odds.
+
+- `gradeSavedNFLPlayerOvers`: grade/recheck saved lines with currently imported completed-game stats. Uses no Odds API credits.
+- `testHistoricalNFLPlayerProjections`: manually test the verified available 2023 and 2024 CSV seasons and save MAE, recent-average baseline MAE, and bias to the Model Performance section. This does not run on daily triggers. Reports already populated from these datasets.
+
+The first 109 real DraftKings lines were captured immediately when tracking was installed. Later syncs append immutable observations; prior weeks remain available after the selected week changes. The report chooses the latest recorded paired pregame line before filtering candidate status, so repeated refreshes and earlier favorable lines are not counted as separate plays. Grading updates the same logical player/market/game result and rechecks recent completed games for stat corrections. Missing or ambiguous player stat rows stay ungraded.
+
+Statistical Over wins/losses/pushes compare final recorded totals to the saved line. This is not confirmation of sportsbook settlement, participation/void rules, or real placed bets. Hypothetical ROI risks one unit per graded over at its saved American price, with pushes returning the stake. Missing results are excluded. Historical point tests evaluate matching final stat rows and do not reconstruct historical injury or depth-chart exclusions. No historical sportsbook lines have been invented or paid historical-odds calls made.
