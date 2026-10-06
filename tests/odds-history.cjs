@@ -1,0 +1,13 @@
+const fs=require('fs'),vm=require('vm'),assert=require('assert');const ctx={console,normalizeNFLTeam:t=>t,normalizePosition:p=>p};vm.createContext(ctx);vm.runInContext(fs.readFileSync(fs.existsSync('Research Model Expansion.gs')?'Research Model Expansion.gs':'expansion-odds.gs','utf8'),ctx);vm.runInContext(fs.readFileSync('NFL Odds and Projections.gs','utf8'),ctx);
+const observation={season:2026,week:4,event_id:'e',player:'James Cook III',team:'BUF',opponent:'NYJ',position:'RB',market_key:'player_rush_yds'};
+const raw=[{season:2026,week:4,recent_team:'BUF',position:'RB',player_display_name:'James Cook',rushing_yards:0}];const schedule=[{Season:2026,Week:4,Away:'BUF',Home:'NYJ',Status:'Final'}];
+assert.equal(ctx.nflOUGradeRows_([observation],raw,schedule,2026).rows[0].actual,0);
+assert.equal(ctx.nflOUGradeRows_([observation],[],schedule,2026).review,1);
+assert.equal(ctx.nflOUGradeRows_([observation],raw.map(r=>({...r,rushing_yards:null})),schedule,2026).review,1);
+assert.equal(ctx.nflOUGradeRows_([observation],raw.concat(raw),schedule,2026).review,1);
+assert.equal(ctx.nflOUGradeRows_([observation],raw,schedule.map(g=>({...g,Status:'Scheduled'})),2026).pending,1);
+assert.equal(ctx.nflOUGradeRows_([observation],raw,schedule,2025).rows.length,0);
+assert.equal(ctx.nflOUGradeRows_([observation,observation],raw,schedule,2026).rows.length,1);
+const x={schedule:[1,2,3,4,5].map(w=>({Season:2026,Week:w,Away:'BUF',Home:'NYJ',Status:w===5?'Scheduled':'Final'})),raw:[1,2,3,4,5].flatMap(w=>['BUF','NYJ'].map(t=>({season:2026,week:w,recent_team:t,position:'RB',player_display_name:t+' RB',player_id:t,attempts:0,passing_yards:0,passing_tds:0,carries:15,rushing_yards:50,receiving_yards:20,targets:4,receptions:3})))};let r=ctx.nflOUBacktest_(x.raw,x.schedule,2026,5),samples=Object.values(r).reduce((s,v)=>s+v.samples,0);
+const future=x.raw.map(v=>Number(v.week)>=5?{...v,rushing_yards:99999,passing_yards:99999}:v);let rr=ctx.nflOUBacktest_(future,x.schedule,2026,5);assert.deepEqual(JSON.parse(JSON.stringify(r)),JSON.parse(JSON.stringify(rr)));assert(samples>0);assert(Object.values(r).every(v=>v.baseline_absolute>=0));
+console.log('Passed final-game grading, recorded zero vs missing row, null and ambiguous row withholding, season isolation, duplicate observation protection, before-week leakage check and baseline evaluation.');
