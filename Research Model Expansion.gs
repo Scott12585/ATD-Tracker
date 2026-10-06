@@ -1033,6 +1033,7 @@ function syncExpandedNFLResearchToSupabase() {
   sendNFLResearchToSupabase_('wr_matchups',buildWRMatchupSyncRows_(season,week));
   console.log('EXPANDED NFL SYNC COMPLETE: '+payload.best_plays.length+' Best Plays, '+payload.game_best_plays.length+' game plays, '+payload.player_props.length+' prop rows.');
   ss.toast('Expanded research synced to Bet Tracker.','Complete',8);
+  if(typeof refreshNFLPlayerOddsAndProjections_ === 'function' && PropertiesService.getScriptProperties().getProperty('ODDS_API_KEY')) refreshNFLPlayerOddsAndProjections_();
 }
 
 /***************************************************************
