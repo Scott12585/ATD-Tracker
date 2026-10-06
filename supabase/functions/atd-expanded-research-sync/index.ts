@@ -14,6 +14,24 @@ Deno.serve(async (req: Request) => {
     for(let i=0;i<hash.length;i++) difference |= hash.charCodeAt(i)^(config.token_hash.charCodeAt(i)||0);
     if(difference!==0) return reply({error:"Invalid sync token"},401);
     const body=await req.json();
+    if(body.action==='ou_pending') {
+      if(!Number.isInteger(body.season)||body.season<2020||body.season>2100) return reply({error:'Invalid tracking season'},400);
+      const {data,error}=await supabase.rpc('nfl_ou_pending',{p_season:body.season});
+      if(error)throw error;
+      return reply({ok:true,observations:data});
+    }
+    if(body.ou_results!==undefined) {
+      const rows=body.ou_results;
+      if(!Array.isArray(rows)||rows.length>2500||rows.some(r=>!r||!Number.isInteger(r.season)||r.season<2020||r.season>2100||!Number.isInteger(r.week)||r.week<1||r.week>18||!r.event_id||!r.player||!r.team||!['player_pass_yds','player_pass_tds','player_rush_yds','player_reception_yds','player_receptions'].includes(r.market_key)||typeof r.actual!=='number'||!Number.isFinite(r.actual)||Math.abs(r.actual)>10000||!r.source)) return reply({error:'Invalid O/U results'},400);
+      const {data,error}=await supabase.rpc('save_nfl_ou_results',{p_rows:rows.map(r=>({...r,graded_at:new Date().toISOString()}))});
+      if(error)throw error;return reply({ok:true,...data});
+    }
+    if(body.ou_backtests!==undefined) {
+      const rows=body.ou_backtests;
+      if(!Array.isArray(rows)||!rows.length||rows.length>100||rows.some(r=>!r||!Number.isInteger(r.season)||r.season<2020||r.season>2100||!r.market||!r.model||!Number.isInteger(r.samples)||r.samples<1||[r.mae,r.bias,r.recent_baseline_mae].some(v=>typeof v!=='number'||!Number.isFinite(v))||r.mae<0||r.recent_baseline_mae<0||!Number.isInteger(r.evaluated_through_week)||r.evaluated_through_week<1||r.evaluated_through_week>18||!r.source)) return reply({error:'Invalid historical backtests'},400);
+      const {data,error}=await supabase.rpc('save_nfl_ou_backtests',{p_rows:rows.map(r=>({...r,updated_at:new Date().toISOString()}))});
+      if(error)throw error;return reply({ok:true,...data});
+    }
     if(body.ou_projections!==undefined) {
       const {season,week,ou_projections}=body;
       if(!Number.isInteger(season)||season<2020||season>2100||!Number.isInteger(week)||week<1||week>18) return reply({error:"Invalid O/U season/week"},400);
