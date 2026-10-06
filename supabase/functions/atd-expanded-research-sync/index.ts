@@ -14,7 +14,7 @@ Deno.serve(async (req: Request) => {
     for(let i=0;i<hash.length;i++) difference |= hash.charCodeAt(i)^(config.token_hash.charCodeAt(i)||0);
     if(difference!==0) return reply({error:"Invalid sync token"},401);
     const body=await req.json();
-    const {season,week,best_plays,game_best_plays,player_props,player_details}=body;
+    const {season,week,best_plays,game_best_plays,player_props,player_details,defense_weeks}=body;
     if(!Number.isInteger(season)||season<2020||season>2100||!Number.isInteger(week)||week<1||week>18) return reply({error:"Invalid season/week"},400);
     for(const rows of [best_plays,game_best_plays,player_props]) {
       if(!Array.isArray(rows)||rows.length>2000) return reply({error:"Invalid dataset array"},400);
@@ -26,11 +26,15 @@ Deno.serve(async (req: Request) => {
     if(player_details!==undefined) {
       if(!Array.isArray(player_details)||player_details.length>2000||player_details.some(r=>!r||r.season!==season||r.week!==week||!['QB','RB','WR','TE'].includes(r.position)||typeof r.player!=='string'||!r.player||typeof r.team!=='string'||!r.team||typeof r.opponent!=='string'||!r.opponent||!r.detail||typeof r.detail!=='object'||Array.isArray(r.detail)||JSON.stringify(r.detail).length>32768)) return reply({error:"Invalid production details"},400);
     }
+    if(defense_weeks!==undefined) {
+      if(player_details===undefined||!Array.isArray(defense_weeks)||defense_weeks.length>2000||defense_weeks.some(r=>!r||r.season!==season||r.target_week!==week||!Number.isInteger(r.game_week)||r.game_week<1||r.game_week>=week||!r.defense||!r.opponent||!r.tds||typeof r.tds!=='object'||Array.isArray(r.tds)||Object.values(r.tds).some(v=>v!==null&&(!Number.isInteger(v)||Number(v)<0)))) return reply({error:"Invalid weekly defense touchdowns"},400);
+    }
     const now=new Date().toISOString();
     const stamp=(rows:Record<string,unknown>[])=>rows.map(r=>({...r,updated_at:now}));
     const args:Record<string,unknown>={p_season:season,p_week:week,p_best:stamp(best_plays),p_games:stamp(game_best_plays),p_props:stamp(player_props)};
     if(player_details!==undefined)args.p_details=stamp(player_details);
-    const {data,error}=await supabase.rpc(player_details===undefined?"replace_nfl_expanded_research":"replace_nfl_expanded_research_with_details",args);
+    if(defense_weeks!==undefined)args.p_defense_weeks=stamp(defense_weeks);
+    const {data,error}=await supabase.rpc(defense_weeks!==undefined?"replace_nfl_expanded_research_full":player_details===undefined?"replace_nfl_expanded_research":"replace_nfl_expanded_research_with_details",args);
     if(error) throw error;
     return reply({ok:true,season,week,...data});
   } catch(error) {
