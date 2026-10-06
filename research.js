@@ -32,16 +32,16 @@
     $('researchBestPlays').innerHTML=positions.map(pos=>{
       const rows=state.best.filter(x=>positionOf(x)===pos).sort((a,b)=>pos==='WR'?n(a.rank)-n(b.rank):n(b.confidence)-n(a.confidence)).slice(0,8);
       if(!rows.length)return '';
-      return `<h3>${esc(pos)} · Anytime TD</h3>`+rows.map(x=>`<article class="research-play"><div><span class="research-score">${Math.round(n(x.confidence))}</span></div><div><strong>${esc(x.player)}</strong><span>${esc(x.team)} vs ${esc(x.opponent)} · ${esc(x.play_type||'Anytime TD')}</span><small>Research score · ${esc(x.availability||'Unverified')} availability</small><small>${esc(x.key_reason||'')}</small></div></article>`).join('');
+      return `<h3>${esc(pos)} · Anytime TD</h3>`+rows.map(x=>`<article class="research-play"><div><span class="research-score">${Math.round(n(x.confidence))}</span></div><div><strong>${esc(x.player)}</strong><span>${esc(x.team)} vs ${esc(x.opponent)} · ${esc(x.play_type||'Anytime TD')}</span><small>Research score · ${esc(x.availability||'Unverified')}</small><small>${esc(x.key_reason||'')}</small></div></article>`).join('');
     }).join('')||'<div class="dashboard-empty">No qualifying plays.</div>';
   }
   function renderProps(){
     const rows=state.props.filter(x=>x.market===state.market&&(state.propPosition==='All'||x.position===state.propPosition));
-    $('researchProps').innerHTML=rows.slice(0,30).map(x=>`<article class="research-play"><div><span class="research-score">${Math.round(n(x.research_score))}</span></div><div><strong>${esc(x.player)} · ${esc(x.position)}</strong><span>${esc(x.team)} vs ${esc(x.opponent)} · ${esc(x.market)}</span><small>Research score · ${esc(x.availability||'Unverified')} availability</small></div></article>`).join('')||'<div class="dashboard-empty">No synced research for this market and position.</div>';
+    $('researchProps').innerHTML=rows.slice(0,30).map(x=>`<article class="research-play"><div><span class="research-score">${Math.round(n(x.research_score))}</span></div><div><strong>${esc(x.player)} · ${esc(x.position)}</strong><span>${esc(x.team)} vs ${esc(x.opponent)} · ${esc(x.market)}</span><small>Research score · ${esc(x.availability||'Unverified')}</small><small>${esc(String(x.notes||'').split('[Current context]')[1]||'')}</small></div></article>`).join('')||'<div class="dashboard-empty">No synced research for this market and position.</div>';
   }
   function renderGames(){
     const by={};state.games.forEach(x=>(by[x.game_label]??=[]).push(x));
-    $('researchGames').innerHTML=Object.entries(by).map(([game,plays])=>`<article class="research-game"><h3>${esc(game)}</h3>${plays.map(x=>`<div class="research-game-play"><span>#${x.play_rank}</span><div><strong>${esc(x.player)}</strong><small>${esc(x.play_type)} · ${Math.round(n(x.confidence))} research score · ${esc(x.availability||'Unverified')} availability</small></div></div>`).join('')}</article>`).join('')||'<div class="dashboard-empty">No game plays.</div>';
+    $('researchGames').innerHTML=Object.entries(by).map(([game,plays])=>`<article class="research-game"><h3>${esc(game)}</h3>${plays.map(x=>`<div class="research-game-play"><span>#${x.play_rank}</span><div><strong>${esc(x.player)}</strong><small>${esc(x.play_type)} · ${Math.round(n(x.confidence))} research score · ${esc(x.availability||'Unverified')}</small></div></div>`).join('')}</article>`).join('')||'<div class="dashboard-empty">No game plays.</div>';
   }
   function renderWR(){
     const q=($('researchSearch')?.value||'').trim().toLowerCase();
