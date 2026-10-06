@@ -70,6 +70,8 @@ function nflOUTeam_(name){
 function nflOUJoinQuotes_(projections,events,now) {
   let unmatched=0;const matched=new Set();
   events.forEach(event=>{
+    const fetchedAt=Number.isFinite(Date.parse(event._fetched_at))?Date.parse(event._fetched_at):now;
+    if(Date.parse(event.commence_time)<=fetchedAt)return;
     const home=nflOUTeam_(event.home_team),away=nflOUTeam_(event.away_team);
     const book=(event.bookmakers||[]).find(b=>b.key==='draftkings');if(!book)return;
     (book.markets||[]).forEach(m=>{
@@ -82,7 +84,7 @@ function nflOUJoinQuotes_(projections,events,now) {
         const p=candidates[0],pk=p.player+'|'+p.team+'|'+p.market_key;
         // More than one line for a player is ambiguous: never choose an alternate silently.
         if(matched.has(pk)){p.quote=null;p.detail.quote_ambiguous=true;return;}matched.add(pk);
-        p.quote={bookmaker:'draftkings',event_id:event.id,commence_time:event.commence_time,line:pair.line,over_odds:pair.Over,under_odds:pair.Under,last_update:m.last_update||book.last_update||null,fetched_at:new Date(now).toISOString()};
+        p.quote={bookmaker:'draftkings',event_id:event.id,commence_time:event.commence_time,line:pair.line,over_odds:pair.Over,under_odds:pair.Under,last_update:m.last_update||book.last_update||null,fetched_at:new Date(fetchedAt).toISOString()};
       });
     });
   });
@@ -94,7 +96,7 @@ function nflOUApi_(path,key){
   catch(e){throw new Error('Odds provider request failed; check connectivity. API key redacted.');}
   const status=response.getResponseCode();
   if(status!==200)throw new Error('Odds provider HTTP '+status+'. Check key, player-prop access and quota.');
-  const h=response.getAllHeaders();console.log('Odds API credits remaining: '+(h['x-requests-remaining']||h['X-Requests-Remaining']||'unknown'));
+  const h=response.getAllHeaders();console.log('Odds API credits remaining: '+(h['x-requests-remaining']??h['X-Requests-Remaining']??'unknown'));
   try{return JSON.parse(response.getContentText());}catch(e){throw new Error('Odds provider returned invalid JSON.');}
 }
 function refreshNFLPlayerOddsAndProjections(){
@@ -108,6 +110,7 @@ function refreshNFLPlayerOddsAndProjections_(){
   const audit=expansionAvailabilityRows_(ss,season,week);if(!audit)throw new Error('Build availability and recent usage first.');
   const raw=expansionTable_(ss,NFL.SHEETS.RAW_PLAYERS,['season','week','position','passing_yards','rushing_yards','receiving_yards','passing_tds','receptions','attempts','carries','targets']);
   const schedule=expansionTable_(ss,NFL.SHEETS.SCHEDULE,['Season','Week','Date','Away','Home','Status']);
+  gradeSavedNFLPlayerOvers_(raw,schedule,season);
   const projections=nflOUProjectionRows_(Array.from(audit.values()),raw,schedule,season,week);
   if(!projections.length)throw new Error('No projections: at least two completed team games with complete stats are needed.');
   const games=schedule.filter(g=>Number(g.Season)===season&&Number(g.Week)===week);
@@ -120,7 +123,8 @@ function refreshNFLPlayerOddsAndProjections_(){
   const quotes=[];
   selected.forEach(e=>{
     if(Date.now()-started>90000)throw new Error('Odds refresh time limit reached; previous snapshot preserved.');
-    quotes.push(nflOUApi_('events/'+encodeURIComponent(e.id)+'/odds?bookmakers=draftkings&markets='+Object.keys(NFL_OU_MARKETS).join(',')+'&oddsFormat=american',key));
+    const result=nflOUApi_('events/'+encodeURIComponent(e.id)+'/odds?bookmakers=draftkings&markets='+Object.keys(NFL_OU_MARKETS).join(',')+'&oddsFormat=american',key);
+    result._fetched_at=new Date().toISOString();quotes.push(result);
   });
   const joined=nflOUJoinQuotes_(projections,quotes,now);
   if(Number(getCurrentWeek())!==week||Number(NFL.SEASON)!==season)throw new Error('Selected season/week changed during odds refresh.');
@@ -140,7 +144,7 @@ function testNFLPlayerProjections(){
   const raw=expansionTable_(ss,NFL.SHEETS.RAW_PLAYERS,['season','week','position','passing_yards','rushing_yards','receiving_yards','passing_tds','receptions','attempts','carries','targets']);
   const schedule=expansionTable_(ss,NFL.SHEETS.SCHEDULE,['Season','Week','Away','Home','Status']);
   const report=nflOUBacktest_(raw,schedule,season,week);
-  Object.entries(report).forEach(([market,r])=>console.log(market+': '+r.samples+' rolling predictions; MAE '+(r.absolute/r.samples).toFixed(1)+'; bias (prediction - actual) '+(r.bias/r.samples).toFixed(1)));
+  Object.entries(report).forEach(([market,r])=>console.log(market+': '+r.samples+' rolling predictions; MAE '+(r.absolute/r.samples).toFixed(1)+'; recent-average baseline MAE '+(r.baseline_absolute/r.samples).toFixed(1)+'; bias (prediction - actual) '+(r.bias/r.samples).toFixed(1)));
   console.log('PROJECTION DIAGNOSTICS COMPLETE: before-week inputs only; point-total accuracy, not over-hit probability or historical profit.');
 }
 function nflOUBacktest_(raw,schedule,season,week){
@@ -154,10 +158,71 @@ function nflOUBacktest_(raw,schedule,season,week){
       const game=schedule.find(g=>Number(g.Season)===season&&Number(g.Week)===target&&String(g.Status).toLowerCase()==='final'&&[expansionSyncTeam_(g.Away),expansionSyncTeam_(g.Home)].includes(p.team));if(!game)return;
       const teamRows=raw.filter(r=>Number(r.season)===season&&Number(r.week)===target&&expansionSyncTeam_(r.recent_team||r.team)===p.team&&(!r.season_type||r.season_type==='REG'));if(!teamRows.length)return;
       const matches=teamRows.filter(r=>expansionNameKey_(r.player_display_name||r.player_name||r.player,p.team)===expansionNameKey_(p.player,p.team));
-      if(matches.length>1)return;
-      const actual=matches.length?numExpansion_(matches[0][m.stat]):0;if(actual===null)return;
-      results[p.market]=results[p.market]||{samples:0,absolute:0,bias:0};const result=results[p.market];result.samples++;result.absolute+=Math.abs(p.projection-actual);result.bias+=p.projection-actual;
+      if(matches.length!==1)return;
+      const actual=numExpansion_(matches[0][m.stat]);if(actual===null)return;
+      results[p.market]=results[p.market]||{samples:0,absolute:0,bias:0,baseline_absolute:0};const result=results[p.market];result.samples++;result.absolute+=Math.abs(p.projection-actual);result.bias+=p.projection-actual;result.baseline_absolute+=Math.abs(p.detail.recent_average-actual);
     });
   }
   return results;
+}
+
+// Private research sync client. Never logs credentials or provider key.
+function nflOUResearchRequest_(body){
+  const p=PropertiesService.getScriptProperties(),base=String(p.getProperty('SUPABASE_URL')||'').replace(/\/$/,''),anon=p.getProperty('SUPABASE_ANON_KEY'),token=p.getProperty('NFL_RESEARCH_SYNC_TOKEN');
+  if(!base||!anon||!token)throw new Error('Supabase research sync properties missing.');
+  const response=UrlFetchApp.fetch(base+'/functions/v1/atd-expanded-research-sync',{method:'post',contentType:'application/json',muteHttpExceptions:true,headers:{apikey:anon,Authorization:'Bearer '+anon,'x-research-sync-token':token},payload:JSON.stringify(body)});
+  if(response.getResponseCode()!==200)throw new Error('Research tracking HTTP '+response.getResponseCode());
+  return JSON.parse(response.getContentText());
+}
+function nflOUGradeRows_(observations,raw,schedule,season){
+  const rows=[],seen=new Set();let pending=0,review=0;
+  observations.filter(p=>p.season===season).forEach(p=>{
+    const identity=[p.season,p.week,p.event_id,p.player,p.team,p.market_key].join('|');if(seen.has(identity))return;seen.add(identity);
+    const game=schedule.find(g=>Number(g.Season)===p.season&&Number(g.Week)===p.week&&[expansionSyncTeam_(g.Away),expansionSyncTeam_(g.Home)].includes(p.team)&&[expansionSyncTeam_(g.Away),expansionSyncTeam_(g.Home)].includes(p.opponent));
+    if(!game||String(game.Status).toLowerCase()!=='final'){pending++;return;}
+    // Require a stat row: absence does not establish participation or a settled zero.
+    const matches=raw.filter(r=>Number(r.season)===p.season&&Number(r.week)===p.week&&(!r.season_type||r.season_type==='REG')&&normalizePosition(r.position)===p.position&&expansionNameKey_(r.player_display_name||r.player_name||r.player,r.recent_team||r.team)===expansionNameKey_(p.player,p.team));
+    const metric=NFL_OU_MARKETS[p.market_key]?.stat;
+    if(matches.length!==1||!metric){review++;return;}
+    const actual=numExpansion_(matches[0][metric]);if(actual===null){review++;return;}
+    rows.push({season:p.season,week:p.week,event_id:p.event_id,player:p.player,team:p.team,market_key:p.market_key,actual:actual,source:'nflverse final weekly player stats; statistical result, sportsbook settlement not verified'});
+  });
+  return {rows:rows,pending:pending,review:review};
+}
+function gradeSavedNFLPlayerOvers_(raw,schedule,season){
+  const response=nflOUResearchRequest_({action:'ou_pending',season:season});
+  const graded=nflOUGradeRows_(response.observations||[],raw,schedule,season);
+  for(let i=0;i<graded.rows.length;i+=500)nflOUResearchRequest_({ou_results:graded.rows.slice(i,i+500)});
+  console.log('O/U RESULT TRACKING: '+graded.rows.length+' final stat rows; '+graded.pending+' pending games; '+graded.review+' missing/ambiguous stat rows need review. No Odds API credits used.');
+}
+function gradeSavedNFLPlayerOvers(){
+  const lock=LockService.getScriptLock();if(!lock.tryLock(1000))throw new Error('Another NFL refresh is running.');
+  try {
+    const ss=SpreadsheetApp.getActiveSpreadsheet(),season=Number(NFL.SEASON);
+    const raw=expansionTable_(ss,NFL.SHEETS.RAW_PLAYERS,['season','week','position','passing_yards','passing_tds','rushing_yards','receiving_yards','receptions']);
+    const schedule=expansionTable_(ss,NFL.SHEETS.SCHEDULE,['Season','Week','Away','Home','Status']);
+    gradeSavedNFLPlayerOvers_(raw,schedule,season);
+  }finally{lock.releaseLock();}
+}
+function testHistoricalNFLPlayerProjections(){
+  const started=Date.now(),required=['player_display_name','position','recent_team','season','week','season_type','passing_yards','rushing_yards','receiving_yards','passing_tds','receptions','attempts','carries','targets'];
+  // Verified complete CSV seasons. 2025 is not available in this source release.
+  const seasons=[2023,2024],report=[];
+  const games=expansionCSVObjects_('https://github.com/nflverse/nflverse-data/releases/download/schedules/games.csv',['season','week','game_type','away_team','home_team','away_score','home_score']);
+  seasons.forEach(season=>{
+    if(Date.now()-started>240000)throw new Error('Historical test time limit; run again for fewer seasons.');
+    const raw=expansionCSVObjects_('https://github.com/nflverse/nflverse-data/releases/download/player_stats/player_stats_'+season+'.csv',required);
+    const schedule=games.filter(g=>Number(g.season)===season&&g.game_type==='REG').map(g=>({Season:season,Week:Number(g.week),Away:g.away_team,Home:g.home_team,Status:g.away_score!==''&&g.home_score!==''?'Final':'Scheduled'}));
+    const stats=nflOUBacktest_(raw,schedule,season,19);
+    const rows=nflOUBacktestReport_(stats,season,18);report.push(...rows);
+    rows.forEach(r=>console.log(season+' '+r.market+': '+r.samples+' rolling predictions; MAE '+r.mae.toFixed(1)+'; recent-average baseline MAE '+r.recent_baseline_mae.toFixed(1)+'; bias '+r.bias.toFixed(1)));
+  });
+  if(!report.length)throw new Error('Historical test produced no samples.');
+  nflOUResearchRequest_({ou_backtests:report});
+  const ss=SpreadsheetApp.getActiveSpreadsheet(),headers=['Season','Market','Samples','Model MAE','Recent Average MAE','Bias','Through Week'];
+  expansionWriteBoard_(ss,'Projection Backtest',headers,report.map(r=>[r.season,r.market,r.samples,r.mae,r.recent_baseline_mae,r.bias,r.evaluated_through_week]));
+  console.log('HISTORICAL PROJECTION TEST COMPLETE: weeks 4–18, earlier-week inputs only. Matched-stat-row evaluation; excludes missing/ambiguous results. Historical rosters and injury decisions are not reconstructed. No historical lines, win-rate or ROI claims.');
+}
+function nflOUBacktestReport_(stats,season,throughWeek){
+  return Object.entries(stats).map(([market,r])=>({season:season,market:market,model:'workload-efficiency-v1',samples:r.samples,mae:r.absolute/r.samples,bias:r.bias/r.samples,recent_baseline_mae:r.baseline_absolute/r.samples,evaluated_through_week:throughWeek,source:'nflverse completed weekly REG games; strictly earlier-week inputs; matched-stat-row evaluation; no historical injury/roster reconstruction or sportsbook lines'}));
 }
