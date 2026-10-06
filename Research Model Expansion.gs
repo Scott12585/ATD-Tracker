@@ -67,9 +67,17 @@ function buildPlayerResearchExpansion() {
 }
 
 function fetchFTNExpansionTable_(category, table) {
-  // Rushing qualification excludes low-volume rushers, including QBs.
-  // Keep the existing passing/receiving population unchanged.
-  const qualified = category !== 'rushing';
+  // Live logs show qualified=false excludes the qualified group.
+  // Combine both populations; mergeExpansionPlayers_ deduplicates players.
+  const qualifiedRows = fetchFTNExpansionPopulation_(category, table, true);
+  if (category !== 'rushing') return qualifiedRows;
+  const otherRows = fetchFTNExpansionPopulation_(category, table, false);
+  console.log(category+'/'+table+': combining '+qualifiedRows.length+
+    ' qualified and '+otherRows.length+' nonqualified rows');
+  return qualifiedRows.concat(otherRows);
+}
+
+function fetchFTNExpansionPopulation_(category, table, qualified) {
   const base =
     'https://stats.ftnfantasy.com/api/v1/stats/categories/' +
     encodeURIComponent(category) + '/tables/' + encodeURIComponent(table) +
