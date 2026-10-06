@@ -1,0 +1,12016 @@
+/***************************************************************
+ * NFL TD DEFENSE TRACKER
+ * -------------------------------------------------------------
+ * Built for these sheets:
+ *
+ * Defense Rankings
+ * Weekly TD Targets
+ * TD Log
+ * Team Game Log
+ * Players
+ * Schedule
+ * Settings
+ * Raw Player Stats
+ * Raw Schedule
+ *
+ * DATA:
+ * nflverse
+ ***************************************************************/
+
+const NFL = {
+  SEASON: 2026,
+
+  URLS: {
+    PBP:
+      'https://github.com/nflverse/nflverse-data/releases/download/pbp/play_by_play_2026.csv.gz',
+
+    PLAYER_STATS:
+      'https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2026.csv',
+
+    ROSTER:
+      'https://github.com/nflverse/nflverse-data/releases/download/rosters/roster_2026.csv',
+
+    SCHEDULE:
+      'https://github.com/nflverse/nflverse-data/releases/download/schedules/games.csv',
+
+    ROSTERS:
+      'https://github.com/nflverse/nflverse-data/releases/download/rosters/roster_2026.csv'
+  },
+
+  SHEETS: {
+  DEFENSE: 'Defense Rankings',
+  TARGETS: 'Weekly TD Targets',
+  GAME_TARGETS: 'Game-by-Game',
+  TD_LOG: 'TD Log',
+  GAME_LOG: 'Team Game Log',
+  PLAYERS: 'Players',
+  WR_MATCHUPS: 'WR Matchups',
+  CB_COVERAGE: 'CB Coverage',
+  SCHEDULE: 'Schedule',
+  SETTINGS: 'Settings',
+  RAW_PLAYERS: 'Raw Player Stats',
+  RAW_SCHEDULE: 'Raw Schedule'
+  }
+};
+
+
+/***************************************************************
+ * MENU
+ ***************************************************************/
+
+function onOpen() {
+
+  SpreadsheetApp.getUi()
+    .createMenu('🏈 NFL TD Tracker')
+    .addItem('Refresh All NFL Data', 'refreshAllNFLData')
+    .addSeparator()
+    .addItem('Refresh Defense Rankings', 'buildDefenseRankings')
+    .addItem('Refresh Weekly TD Targets', 'buildWeeklyTDTargets')
+    .addItem('Refresh Game-by-Game', 'buildGameByGameTargets')
+    .addSeparator()
+    .addItem('Install Daily Refresh', 'installDailyRefresh')
+    .addToUi();
+}
+
+
+/***************************************************************
+ * MASTER REFRESH
+ ***************************************************************/
+
+function refreshAllNFLData() {
+
+  const ss = SpreadsheetApp.getActive();
+
+  ss.toast(
+    'Downloading 2026 NFL data...',
+    'NFL TD Tracker',
+    5
+  );
+
+  try {
+
+    importSchedule();
+
+    ss.toast(
+      'Schedule imported. Loading player stats...',
+      'NFL TD Tracker',
+      5
+    );
+
+    importPlayerStats();
+
+    ss.toast(
+      'Player stats imported. Processing touchdowns...',
+      'NFL TD Tracker',
+      5
+    );
+
+    importTouchdowns();
+
+    ss.toast(
+      'Building defensive game logs...',
+      'NFL TD Tracker',
+      5
+    );
+
+    buildTeamGameLog();
+
+    ss.toast(
+      'Calculating defensive rankings...',
+      'NFL TD Tracker',
+      5
+    );
+
+    buildDefenseRankings();
+
+    ss.toast(
+      'Building player database...',
+      'NFL TD Tracker',
+      5
+    );
+
+    buildPlayers();
+
+    ss.toast(
+      'Finding this week’s best TD spots...',
+      'NFL TD Tracker',
+      5
+    );
+
+    buildWeeklyTDTargets();
+
+    ss.toast(
+      'Building game-by-game TD targets...',
+      'NFL TD Tracker',
+      5
+    );
+
+    buildGameByGameTargets();
+
+    ss.toast(
+      'Building CB coverage ratings...',
+      'NFL TD Tracker',
+      5
+    );
+
+    buildCBCoverage();
+
+    // Everything has now refreshed successfully.
+    setLastRefresh();
+
+    ss.toast(
+      'NFL TD Tracker updated!',
+      'Complete',
+      8
+    );
+
+  } catch (err) {
+
+    console.error(err);
+
+    SpreadsheetApp.getUi().alert(
+      'NFL TD Tracker Error',
+      String(err.message || err),
+      SpreadsheetApp.getUi().ButtonSet.OK
+    );
+  }
+}
+
+/***************************************************************
+ * FETCH CSV
+ ***************************************************************/
+
+function fetchCSV(url) {
+
+  const response = UrlFetchApp.fetch(url, {
+    muteHttpExceptions: true,
+    followRedirects: true,
+    headers: {
+      'User-Agent': 'Mozilla/5.0'
+    }
+  });
+
+  if (response.getResponseCode() !== 200) {
+    throw new Error(
+      'Could not download:\n' +
+      url +
+      '\nHTTP ' +
+      response.getResponseCode()
+    );
+  }
+
+  let text;
+
+  if (url.endsWith('.gz')) {
+
+    const blob = response.getBlob();
+
+    const unzipped = Utilities.ungzip(blob);
+
+    text = unzipped.getDataAsString();
+
+  } else {
+
+    text = response.getContentText();
+  }
+
+  return Utilities.parseCsv(text);
+}
+
+
+/***************************************************************
+ * HELPER — COLUMN LOOKUP
+ ***************************************************************/
+
+function columnMap(headers) {
+
+  const map = {};
+
+  headers.forEach((h, i) => {
+    map[String(h).trim()] = i;
+  });
+
+  return map;
+}
+
+
+function value(row, map, name) {
+
+  const i = map[name];
+
+  if (i === undefined) return '';
+
+  return row[i];
+}
+
+
+function num(v) {
+
+  const n = Number(v);
+
+  return Number.isFinite(n) ? n : 0;
+}
+
+
+/***************************************************************
+ * SCHEDULE
+ ***************************************************************/
+
+function importSchedule() {
+
+  const data = fetchCSV(NFL.URLS.SCHEDULE);
+
+  const headers = data[0];
+
+  const m = columnMap(headers);
+
+  const output = [[
+    'Season',
+    'Week',
+    'Date',
+    'Time ET',
+    'Away',
+    'Home',
+    'Away Opp Defense',
+    'Home Opp Defense',
+    'Game ID',
+    'Status'
+  ]];
+
+  for (let i = 1; i < data.length; i++) {
+
+    const r = data[i];
+
+    if (num(value(r, m, 'season')) !== NFL.SEASON)
+      continue;
+
+    const gameType =
+      value(r, m, 'game_type');
+
+    if (gameType && gameType !== 'REG')
+      continue;
+
+    const away =
+      value(r, m, 'away_team');
+
+    const home =
+      value(r, m, 'home_team');
+
+    output.push([
+      NFL.SEASON,
+      num(value(r, m, 'week')),
+      value(r, m, 'gameday'),
+      value(r, m, 'gametime'),
+      away,
+      home,
+      home,
+      away,
+      value(r, m, 'game_id'),
+      value(r, m, 'result') ? 'Final' : 'Scheduled'
+    ]);
+  }
+
+  writeTable(
+    NFL.SHEETS.SCHEDULE,
+    output
+  );
+
+  /*
+   * Keep raw schedule too
+   */
+
+  const rawSheet =
+    SpreadsheetApp.getActive()
+      .getSheetByName(NFL.SHEETS.RAW_SCHEDULE);
+
+  rawSheet.clearContents();
+
+  const rawRows = data.filter((r, i) =>
+    i === 0 ||
+    num(value(r, m, 'season')) === NFL.SEASON
+  );
+
+  if (rawRows.length) {
+
+    rawSheet
+      .getRange(
+        1,
+        1,
+        rawRows.length,
+        rawRows[0].length
+      )
+      .setValues(rawRows);
+  }
+}
+
+
+/***************************************************************
+ * PLAYER STATS
+ ***************************************************************/
+
+function importPlayerStats() {
+
+  const data =
+    fetchCSV(NFL.URLS.PLAYER_STATS);
+
+  const headers = data[0];
+
+  const m = columnMap(headers);
+
+  const rows = [headers];
+
+  for (let i = 1; i < data.length; i++) {
+
+    const r = data[i];
+
+    if (
+      num(value(r, m, 'season')) === NFL.SEASON
+    ) {
+      rows.push(r);
+    }
+  }
+
+  const sheet =
+    SpreadsheetApp.getActive()
+      .getSheetByName(NFL.SHEETS.RAW_PLAYERS);
+
+  sheet.clearContents();
+
+  if (rows.length) {
+
+    ensureSize(
+      sheet,
+      rows.length,
+      rows[0].length
+    );
+
+    sheet
+      .getRange(
+        1,
+        1,
+        rows.length,
+        rows[0].length
+      )
+      .setValues(rows);
+  }
+}
+
+
+/***************************************************************
+ * TOUCHDOWN DATABASE
+ ***************************************************************/
+
+function importTouchdowns() {
+
+  const pbp = fetchCSV(NFL.URLS.PBP);
+
+  const headers = pbp[0];
+
+  const m = columnMap(headers);
+
+  /*
+   * Roster lets us reliably identify
+   * RB / WR / TE / QB.
+   */
+
+  const positions = loadRosterPositions();
+
+  const output = [[
+    'Season',
+    'Week',
+    'Game ID',
+    'Date',
+    'Offense',
+    'Defense',
+    'Scorer',
+    'Player ID',
+    'Position',
+    'TD Type',
+    'Passer',
+    'Yards',
+    'Quarter',
+    'Time',
+    'Source Play ID'
+  ]];
+
+  for (let i = 1; i < pbp.length; i++) {
+
+    const r = pbp[i];
+
+    /*
+     * Only actual offensive TD plays.
+     */
+
+    if (
+      num(value(r, m, 'touchdown')) !== 1
+    ) continue;
+
+    /*
+     * Ignore defensive and special teams TDs.
+     */
+
+    const interceptionTD =
+      num(value(r, m, 'interception')) === 1;
+
+    const fumbleReturn =
+      num(value(r, m, 'fumble_lost')) === 1 &&
+      !value(r, m, 'rusher_player_id') &&
+      !value(r, m, 'receiver_player_id');
+
+    const returnTD =
+      num(value(r, m, 'return_touchdown')) === 1;
+
+    if (
+      interceptionTD ||
+      fumbleReturn ||
+      returnTD
+    ) continue;
+
+
+    const passer =
+      value(r, m, 'passer_player_name');
+
+    const receiver =
+      value(r, m, 'receiver_player_name');
+
+    const receiverID =
+      value(r, m, 'receiver_player_id');
+
+    const rusher =
+      value(r, m, 'rusher_player_name');
+
+    const rusherID =
+      value(r, m, 'rusher_player_id');
+
+
+    let scorer = '';
+    let playerID = '';
+    let tdType = '';
+    let yards = 0;
+
+
+    /*
+     * Receiving TD
+     */
+
+    if (
+      num(value(r, m, 'pass_touchdown')) === 1
+    ) {
+
+      scorer = receiver;
+      playerID = receiverID;
+
+      tdType = 'Receiving';
+
+      yards =
+        num(value(r, m, 'receiving_yards'));
+    }
+
+
+    /*
+     * Rushing TD
+     */
+
+    else if (
+      num(value(r, m, 'rush_touchdown')) === 1
+    ) {
+
+      scorer = rusher;
+      playerID = rusherID;
+
+      tdType = 'Rushing';
+
+      yards =
+        num(value(r, m, 'rushing_yards'));
+    }
+
+
+    /*
+     * We only want offensive rushing/receiving
+     * TDs for this model.
+     */
+
+    else {
+      continue;
+    }
+
+
+    if (!scorer)
+      continue;
+
+
+    let pos =
+      positions[playerID] || '';
+
+    /*
+     * nflverse occasionally has missing
+     * position mappings. Keep UNKNOWN so
+     * the TD still counts toward overall.
+     */
+
+    if (!pos)
+      pos = 'UNK';
+
+
+    output.push([
+      NFL.SEASON,
+
+      num(value(r, m, 'week')),
+
+      value(r, m, 'game_id'),
+
+      value(r, m, 'game_date'),
+
+      value(r, m, 'posteam'),
+
+      value(r, m, 'defteam'),
+
+      scorer,
+
+      playerID,
+
+      normalizePosition(pos),
+
+      tdType,
+
+      passer,
+
+      yards,
+
+      num(value(r, m, 'qtr')),
+
+      value(r, m, 'time'),
+
+      value(r, m, 'play_id')
+    ]);
+  }
+
+
+  writeTable(
+    NFL.SHEETS.TD_LOG,
+    output
+  );
+}
+
+
+/***************************************************************
+ * ROSTER POSITIONS
+ ***************************************************************/
+
+function loadRosterPositions() {
+
+  const data =
+    fetchCSV(NFL.URLS.ROSTER);
+
+  const headers = data[0];
+
+  const m = columnMap(headers);
+
+  const map = {};
+
+  for (let i = 1; i < data.length; i++) {
+
+    const r = data[i];
+
+    const id =
+      value(r, m, 'gsis_id');
+
+    const pos =
+      value(r, m, 'position');
+
+    if (id)
+      map[id] = pos;
+  }
+
+  return map;
+}
+
+
+function normalizePosition(pos) {
+
+  pos =
+    String(pos || '')
+      .toUpperCase()
+      .trim();
+
+  if (
+    ['HB', 'FB'].includes(pos)
+  ) return 'RB';
+
+  if (
+    ['WR'].includes(pos)
+  ) return 'WR';
+
+  if (
+    ['TE'].includes(pos)
+  ) return 'TE';
+
+  if (
+    ['QB'].includes(pos)
+  ) return 'QB';
+
+  if (
+    ['RB'].includes(pos)
+  ) return 'RB';
+
+  return pos || 'UNK';
+}
+
+
+/***************************************************************
+ * TEAM GAME LOG
+ ***************************************************************/
+
+function buildTeamGameLog() {
+
+  const ss = SpreadsheetApp.getActive();
+
+  const tdSheet =
+    ss.getSheetByName(NFL.SHEETS.TD_LOG);
+
+  const rows =
+    tdSheet.getDataRange().getValues();
+
+  if (rows.length < 2)
+    return;
+
+
+  const h = columnMap(rows[0]);
+
+  const games = {};
+
+
+  for (let i = 1; i < rows.length; i++) {
+
+    const r = rows[i];
+
+    const game =
+      r[h['Game ID']];
+
+    const defense =
+      r[h['Defense']];
+
+    if (!game || !defense)
+      continue;
+
+
+    const key =
+      game + '|' + defense;
+
+
+    if (!games[key]) {
+
+      games[key] = {
+        season: r[h['Season']],
+        week: r[h['Week']],
+        date: r[h['Date']],
+        defense,
+        opponent: r[h['Offense']],
+        total: 0,
+        pass: 0,
+        rush: 0,
+        wr: 0,
+        te: 0,
+        rbRec: 0,
+        rbRush: 0,
+        qbRush: 0,
+        game
+      };
+    }
+
+
+    const g = games[key];
+
+    const pos =
+      r[h['Position']];
+
+    const type =
+      r[h['TD Type']];
+
+
+    g.total++;
+
+
+    if (type === 'Receiving') {
+
+      g.pass++;
+
+      if (pos === 'WR')
+        g.wr++;
+
+      if (pos === 'TE')
+        g.te++;
+
+      if (pos === 'RB')
+        g.rbRec++;
+    }
+
+
+    if (type === 'Rushing') {
+
+      g.rush++;
+
+      if (pos === 'RB')
+        g.rbRush++;
+
+      if (pos === 'QB')
+        g.qbRush++;
+    }
+  }
+
+
+  /*
+   * Include games where defense allowed ZERO TDs.
+   */
+
+  const schedule =
+    ss.getSheetByName(NFL.SHEETS.SCHEDULE)
+      .getDataRange()
+      .getValues();
+
+  const sh =
+    columnMap(schedule[0]);
+
+
+  for (let i = 1; i < schedule.length; i++) {
+
+    const r = schedule[i];
+
+    if (r[sh['Status']] !== 'Final')
+      continue;
+
+    const game =
+      r[sh['Game ID']];
+
+    const date =
+      r[sh['Date']];
+
+    const week =
+      r[sh['Week']];
+
+    const away =
+      r[sh['Away']];
+
+    const home =
+      r[sh['Home']];
+
+
+    [
+      [away, home],
+      [home, away]
+
+    ].forEach(pair => {
+
+      const defense = pair[0];
+      const opponent = pair[1];
+
+      const key =
+        game + '|' + defense;
+
+      if (!games[key]) {
+
+        games[key] = {
+          season: NFL.SEASON,
+          week,
+          date,
+          defense,
+          opponent,
+          total: 0,
+          pass: 0,
+          rush: 0,
+          wr: 0,
+          te: 0,
+          rbRec: 0,
+          rbRush: 0,
+          qbRush: 0,
+          game
+        };
+      }
+    });
+  }
+
+
+  const output = [[
+    'Season',
+    'Week',
+    'Date',
+    'Defense',
+    'Opponent',
+    'Total TD Allowed',
+    'Pass TD',
+    'Rush TD',
+    'WR TD',
+    'TE TD',
+    'RB Rec TD',
+    'RB Rush TD',
+    'QB Rush TD',
+    'Game ID'
+  ]];
+
+
+  Object.values(games)
+    .sort((a, b) =>
+      a.week - b.week ||
+      String(a.defense)
+        .localeCompare(String(b.defense))
+    )
+    .forEach(g => {
+
+      output.push([
+        g.season,
+        g.week,
+        g.date,
+        g.defense,
+        g.opponent,
+        g.total,
+        g.pass,
+        g.rush,
+        g.wr,
+        g.te,
+        g.rbRec,
+        g.rbRush,
+        g.qbRush,
+        g.game
+      ]);
+    });
+
+
+  writeTable(
+    NFL.SHEETS.GAME_LOG,
+    output
+  );
+}
+
+
+/***************************************************************
+ * DEFENSE RANKINGS
+ ***************************************************************/
+
+function buildDefenseRankings() {
+
+  const ss =
+    SpreadsheetApp.getActive();
+
+  const sheet =
+    ss.getSheetByName(NFL.SHEETS.DEFENSE);
+
+  const gameSheet =
+    ss.getSheetByName(NFL.SHEETS.GAME_LOG);
+
+  const rows =
+    gameSheet.getDataRange().getValues();
+
+  if (rows.length < 2)
+    return;
+
+
+  const h =
+    columnMap(rows[0]);
+
+  const defenses = {};
+
+
+  for (let i = 1; i < rows.length; i++) {
+
+    const r = rows[i];
+
+    const team =
+      r[h['Defense']];
+
+    if (!team)
+      continue;
+
+
+    if (!defenses[team]) {
+
+      defenses[team] = {
+        team,
+        games: []
+      };
+    }
+
+
+    defenses[team].games.push({
+      week: num(r[h['Week']]),
+      total: num(r[h['Total TD Allowed']]),
+      pass: num(r[h['Pass TD']]),
+      rush: num(r[h['Rush TD']]),
+      wr: num(r[h['WR TD']]),
+      te: num(r[h['TE TD']]),
+      rbRec: num(r[h['RB Rec TD']]),
+      rbRush: num(r[h['RB Rush TD']]),
+      qbRush: num(r[h['QB Rush TD']])
+    });
+  }
+
+
+  const result = [];
+
+
+  Object.values(defenses)
+    .forEach(d => {
+
+      d.games.sort(
+        (a, b) => a.week - b.week
+      );
+
+      const games = d.games;
+
+      const last3 =
+        games.slice(-3);
+
+      const sum =
+        key =>
+          games.reduce(
+            (s, g) => s + g[key],
+            0
+          );
+
+      const last3TD =
+        last3.reduce(
+          (s, g) => s + g.total,
+          0
+        );
+
+
+      const positionTotals = {
+        WR: sum('wr'),
+        TE: sum('te'),
+        RB:
+          sum('rbRec') +
+          sum('rbRush'),
+        QB: sum('qbRush')
+      };
+
+
+      const bestAttack =
+        Object.entries(positionTotals)
+          .sort((a, b) => b[1] - a[1])[0];
+
+
+      const total =
+        sum('total');
+
+
+      result.push({
+        team: d.team,
+        games: games.length,
+        total,
+        perGame:
+          games.length ?
+            total / games.length :
+            0,
+        pass: sum('pass'),
+        rush: sum('rush'),
+        wr: sum('wr'),
+        te: sum('te'),
+        rbRec: sum('rbRec'),
+        rbRush: sum('rbRush'),
+        qbRush: sum('qbRush'),
+        last3: last3TD,
+        last3pg:
+          last3.length ?
+            last3TD / last3.length :
+            0,
+        best:
+          bestAttack ?
+            bestAttack[0] :
+            '',
+        trend:
+          getTrend(
+            games,
+            last3TD,
+            last3.length
+          )
+      });
+    });
+
+
+  /*
+   * Most TD-friendly defense = rank #1
+   */
+
+  result.sort(
+    (a, b) =>
+      b.perGame - a.perGame
+  );
+
+
+  const output = [];
+
+
+  result.forEach((d, i) => {
+
+    output.push([
+      i + 1,
+      d.team,
+      d.games,
+      d.total,
+      d.perGame,
+      d.pass,
+      d.rush,
+      d.wr,
+      d.te,
+      d.rbRec,
+      d.rbRush,
+      d.qbRush,
+      d.last3,
+      d.last3pg,
+      d.best,
+      d.trend
+    ]);
+  });
+
+
+  /*
+   * Keep title rows 1–3.
+   */
+
+  if (
+    sheet.getMaxRows() > 3
+  ) {
+
+    sheet
+      .getRange(
+        4,
+        1,
+        sheet.getMaxRows() - 3,
+        16
+      )
+      .clearContent();
+  }
+
+
+  if (output.length) {
+
+    sheet
+      .getRange(
+        4,
+        1,
+        output.length,
+        16
+      )
+      .setValues(output);
+
+
+    sheet
+      .getRange(
+        4,
+        5,
+        output.length,
+        1
+      )
+      .setNumberFormat('0.00');
+
+
+    sheet
+      .getRange(
+        4,
+        14,
+        output.length,
+        1
+      )
+      .setNumberFormat('0.00');
+  }
+
+
+  applyDefenseHeatmap(
+    sheet,
+    output.length
+  );
+}
+
+
+function getTrend(
+  games,
+  last3TD,
+  last3Count
+) {
+
+  if (
+    !games.length ||
+    !last3Count
+  ) return '—';
+
+
+  const season =
+    games.reduce(
+      (s, g) => s + g.total,
+      0
+    ) / games.length;
+
+
+  const recent =
+    last3TD / last3Count;
+
+
+  if (recent >= season + 0.5)
+    return '🔥 Worse';
+
+  if (recent <= season - 0.5)
+    return '❄️ Better';
+
+  return '➡️ Steady';
+}
+
+
+/***************************************************************
+ * PLAYER DATABASE
+ ***************************************************************/
+
+function buildPlayers() {
+
+  const ss = SpreadsheetApp.getActive();
+
+  const raw = ss
+    .getSheetByName(NFL.SHEETS.RAW_PLAYERS)
+    .getDataRange()
+    .getValues();
+
+  if (raw.length < 2) return;
+
+  const h = columnMap(raw[0]);
+  const players = {};
+  // Current roster data is our authority
+// for team assignment and roster status.
+
+const currentRoster =
+  getCurrentRosterMap();
+
+  // ==========================================================
+  // 1. BUILD BASIC PLAYER STATS
+  // ==========================================================
+
+  for (let i = 1; i < raw.length; i++) {
+
+    const r = raw[i];
+
+    const id = getAny(r, h, [
+      'player_id',
+      'gsis_id'
+    ]);
+
+    const name = getAny(r, h, [
+      'player_display_name',
+      'player_name',
+      'player'
+    ]);
+
+    if (!id || !name) continue;
+
+    const pos = normalizePosition(
+      getAny(r, h, [
+        'position',
+        'position_group'
+      ])
+    );
+
+    if (!['QB', 'RB', 'WR', 'TE'].includes(pos))
+      continue;
+
+    const week = num(
+      getAny(r, h, ['week'])
+    );
+
+    const rushTD = num(
+      getAny(r, h, ['rushing_tds'])
+    );
+
+    const recTD = num(
+      getAny(r, h, ['receiving_tds'])
+    );
+
+    if (!players[id]) {
+
+      players[id] = {
+        id,
+        name,
+        team: '',
+        pos,
+        weeks: [],
+        rzCarries: 0,
+        goalLineCarries: 0,
+        rzTargets: 0,
+        inside10Targets: 0,
+        last3RZOpps: 0
+      };
+    }
+
+    players[id].team =
+      getAny(r, h, [
+        'recent_team',
+        'team'
+      ]) || players[id].team;
+
+    players[id].weeks.push({
+      week,
+      td: rushTD + recTD,
+      rushTD,
+      recTD
+    });
+  }
+
+
+  // ==========================================================
+  // 2. DOWNLOAD PBP FOR TRUE RED-ZONE USAGE
+  // ==========================================================
+
+  const pbp = fetchCSV(NFL.URLS.PBP);
+
+  if (pbp.length > 1) {
+
+    const pbh = columnMap(pbp[0]);
+
+    // Determine the latest completed/available week
+    let maxWeek = 0;
+
+    for (let i = 1; i < pbp.length; i++) {
+
+      const w = num(
+        value(pbp[i], pbh, 'week')
+      );
+
+      if (w > maxWeek)
+        maxWeek = w;
+    }
+
+    const last3Start =
+      Math.max(1, maxWeek - 2);
+
+
+    for (let i = 1; i < pbp.length; i++) {
+
+      const r = pbp[i];
+
+      const week =
+        num(value(r, pbh, 'week'));
+
+      const yardline =
+        num(
+          value(
+            r,
+            pbh,
+            'yardline_100'
+          )
+        );
+
+      /*
+       * yardline_100:
+       *
+       * 20 = opponent 20
+       * 10 = opponent 10
+       * 5  = opponent 5
+       * 1  = opponent 1
+       */
+
+      if (!yardline || yardline > 20)
+        continue;
+
+
+      // ======================================================
+      // RUSHING ATTEMPTS
+      // ======================================================
+
+      const rushAttempt =
+        num(
+          value(
+            r,
+            pbh,
+            'rush_attempt'
+          )
+        ) === 1;
+
+      if (rushAttempt) {
+
+        const id =
+          value(
+            r,
+            pbh,
+            'rusher_player_id'
+          );
+
+        if (id && players[id]) {
+
+          players[id].rzCarries++;
+
+          if (yardline <= 5)
+            players[id].goalLineCarries++;
+
+          if (week >= last3Start)
+            players[id].last3RZOpps++;
+        }
+      }
+
+
+      // ======================================================
+      // RECEIVING TARGETS
+      // ======================================================
+
+      const passAttempt =
+        num(
+          value(
+            r,
+            pbh,
+            'pass_attempt'
+          )
+        ) === 1;
+
+      const receiverID =
+        value(
+          r,
+          pbh,
+          'receiver_player_id'
+        );
+
+      /*
+       * receiver_player_id on an actual pass attempt
+       * gives us the intended receiver.
+       */
+
+      if (
+        passAttempt &&
+        receiverID &&
+        players[receiverID]
+      ) {
+
+        players[receiverID].rzTargets++;
+
+        if (yardline <= 10)
+          players[receiverID].inside10Targets++;
+
+        if (week >= last3Start)
+          players[receiverID].last3RZOpps++;
+      }
+    }
+  }
+
+
+  // ==========================================================
+  // 3. CALCULATE TEAM RED-ZONE OPPORTUNITY TOTALS
+  // ==========================================================
+
+  const teamTotals = {};
+
+  Object.values(players).forEach(p => {
+
+    if (!p.team) return;
+
+    if (!teamTotals[p.team])
+      teamTotals[p.team] = 0;
+
+    teamTotals[p.team] +=
+      p.rzCarries +
+      p.rzTargets;
+  });
+
+
+  // ==========================================================
+  // 4. OUTPUT PLAYER DATABASE
+  // ==========================================================
+  // ==========================================================
+// APPLY CURRENT ROSTER DATA
+// ==========================================================
+
+Object.values(players).forEach(p => {
+
+  const roster =
+    currentRoster[p.id];
+
+
+  /*
+   * No current roster record:
+   * do not consider this player active.
+   */
+
+  if (!roster) {
+
+    p.active = false;
+
+    return;
+  }
+
+
+  /*
+   * Current roster team overrides
+   * the potentially stale stats team.
+   */
+
+  if (roster.team) {
+
+    p.team =
+      roster.team;
+  }
+
+
+  /*
+   * Also refresh position when available.
+   */
+
+  if (roster.position) {
+
+    p.pos =
+      roster.position;
+  }
+
+
+  p.active =
+    roster.active;
+});
+
+
+  const output = [[
+
+
+    'Player ID',
+    'Player',
+    'Team',
+    'Position',
+    'Season TDs',
+    'Last 3 TDs',
+    'RZ Carries',
+    'Goal Line Carries',
+    'RZ Targets',
+    'Inside 10 Targets',
+    'RZ Opportunities',
+    'Team RZ Share',
+    'Last 3 RZ Opps',
+    'Opportunity Score',
+    'Active'
+  ]];
+
+
+  Object.values(players)
+    .forEach(p => {
+
+      p.weeks.sort(
+        (a, b) => a.week - b.week
+      );
+
+      const seasonTD =
+        p.weeks.reduce(
+          (s, w) => s + w.td,
+          0
+        );
+
+      const last3TD =
+        p.weeks
+          .slice(-3)
+          .reduce(
+            (s, w) => s + w.td,
+            0
+          );
+
+      const rzOpps =
+        p.rzCarries +
+        p.rzTargets;
+
+      const teamTotal =
+        teamTotals[p.team] || 0;
+
+      const share =
+        teamTotal
+          ? rzOpps / teamTotal
+          : 0;
+
+
+      /*
+       * OPPORTUNITY SCORE
+       *
+       * Goal-line carries carry the most weight.
+       * Inside-10 targets also receive extra weight.
+       *
+       * The purpose is not to predict TDs by itself.
+       * It measures how much high-value scoring work
+       * a player is receiving.
+       */
+
+      const opportunityScore =
+        Math.min(
+          100,
+          Math.round(
+
+            p.rzCarries * 2 +
+
+            p.goalLineCarries * 5 +
+
+            p.rzTargets * 2 +
+
+            p.inside10Targets * 3 +
+
+            p.last3RZOpps * 3 +
+
+            share * 30
+          )
+        );
+
+
+      output.push([
+        p.id,
+        p.name,
+        p.team,
+        p.pos,
+        seasonTD,
+        last3TD,
+        p.rzCarries,
+        p.goalLineCarries,
+        p.rzTargets,
+        p.inside10Targets,
+        rzOpps,
+        share,
+        p.last3RZOpps,
+        opportunityScore,
+        p.active ? 'Yes' : 'No'
+      ]);
+    });
+
+
+  writeTable(
+    NFL.SHEETS.PLAYERS,
+    output
+  );
+
+
+  /*
+   * Format Team RZ Share as %
+   */
+
+  const sheet =
+    ss.getSheetByName(
+      NFL.SHEETS.PLAYERS
+    );
+
+  if (output.length > 1) {
+
+    sheet
+      .getRange(
+        2,
+        12,
+        output.length - 1,
+        1
+      )
+      .setNumberFormat('0.0%');
+  }
+}
+
+
+/***************************************************************
+ * WEEKLY TD TARGETS
+ ***************************************************************/
+
+function buildWeeklyTDTargets() {
+
+  const ss =
+    SpreadsheetApp.getActive();
+
+  const week =
+    getCurrentWeek();
+
+  const targetSheet =
+    ss.getSheetByName(
+      NFL.SHEETS.TARGETS
+    );
+
+  const positionFilter =
+    String(
+      targetSheet
+        .getRange('D2')
+        .getValue() || 'ALL'
+    ).toUpperCase();
+
+  const minimumScore =
+    num(
+      targetSheet
+        .getRange('F2')
+        .getValue()
+    );
+
+
+  // ==========================================================
+  // DEFENSES
+  // ==========================================================
+
+  const defSheet =
+    ss.getSheetByName(
+      NFL.SHEETS.DEFENSE
+    );
+
+  const defRows =
+    defSheet
+      .getRange(
+        3,
+        1,
+        Math.max(
+          1,
+          defSheet.getLastRow() - 2
+        ),
+        16
+      )
+      .getValues();
+
+  const dh =
+    columnMap(defRows[0]);
+
+  const defenses = {};
+
+
+  for (
+    let i = 1;
+    i < defRows.length;
+    i++
+  ) {
+
+    const r = defRows[i];
+
+    const team =
+      r[dh['Defense']];
+
+    if (!team)
+      continue;
+
+
+    defenses[team] = {
+
+      rank:
+        num(r[dh['Rank']]),
+
+      games:
+        num(r[dh['Games']]),
+
+      total:
+        num(r[dh['Total TD']]),
+
+      pg:
+        num(r[dh['TD/Game']]),
+
+      wr:
+        num(r[dh['WR Rec TD']]),
+
+      te:
+        num(r[dh['TE Rec TD']]),
+
+      rbRec:
+        num(r[dh['RB Rec TD']]),
+
+      rbRush:
+        num(r[dh['RB Rush TD']]),
+
+      qbRush:
+        num(r[dh['QB Rush TD']]),
+
+      last3:
+        num(r[dh['Last 3 TD']])
+    };
+  }
+
+
+  // ==========================================================
+  // SCHEDULE
+  // ==========================================================
+
+  const schedule =
+    ss.getSheetByName(
+      NFL.SHEETS.SCHEDULE
+    )
+      .getDataRange()
+      .getValues();
+
+  const sh =
+    columnMap(schedule[0]);
+
+  const opponents = {};
+
+
+  for (
+    let i = 1;
+    i < schedule.length;
+    i++
+  ) {
+
+    const r = schedule[i];
+
+    if (
+      num(r[sh['Week']]) !== week
+    ) continue;
+
+
+    const away =
+      r[sh['Away']];
+
+    const home =
+      r[sh['Home']];
+
+
+    const gameDisplay =
+      formatGameDateTime(
+        r[sh['Date']],
+        r[sh['Time ET']]
+      );
+
+
+    opponents[away] = {
+      opponent: home,
+      game: gameDisplay
+    };
+
+
+    opponents[home] = {
+      opponent: away,
+      game: gameDisplay
+    };
+  }
+
+
+  // ==========================================================
+  // PLAYERS
+  // ==========================================================
+
+  const playerRows =
+    ss.getSheetByName(
+      NFL.SHEETS.PLAYERS
+    )
+      .getDataRange()
+      .getValues();
+
+  const ph =
+    columnMap(playerRows[0]);
+
+  const candidates = [];
+
+
+  for (
+    let i = 1;
+    i < playerRows.length;
+    i++
+  ) {
+
+    const r = playerRows[i];
+
+    const player =
+      r[ph['Player']];
+
+    const pos =
+      String(
+        r[ph['Position']]
+      ).toUpperCase();
+
+    const team =
+      r[ph['Team']];
+
+      const active =
+  String(
+    r[ph['Active']]
+  ).toUpperCase() === 'YES';
+
+
+    if (
+  !player ||
+  !team ||
+  !active ||
+  !opponents[team]
+) continue;
+
+
+    if (
+      positionFilter !== 'ALL' &&
+      pos !== positionFilter
+    ) continue;
+
+
+    const opponent =
+      opponents[team].opponent;
+
+    const d =
+      defenses[opponent];
+
+    if (!d)
+      continue;
+
+
+    // ========================================================
+    // POSITION-SPECIFIC DEFENSE
+    // ========================================================
+
+    let posAllowed = 0;
+
+
+    if (pos === 'WR')
+      posAllowed = d.wr;
+
+    else if (pos === 'TE')
+      posAllowed = d.te;
+
+    else if (pos === 'RB')
+      posAllowed =
+        d.rbRec +
+        d.rbRush;
+
+    else if (pos === 'QB')
+      posAllowed =
+        d.qbRush;
+
+    else
+      continue;
+
+
+    // ========================================================
+    // PLAYER DATA
+    // ========================================================
+
+    const seasonTD =
+      num(
+        r[ph['Season TDs']]
+      );
+
+    const recentTD =
+      num(
+        r[ph['Last 3 TDs']]
+      );
+
+    const rzCarries =
+      num(
+        r[ph['RZ Carries']]
+      );
+
+    const goalLine =
+      num(
+        r[ph['Goal Line Carries']]
+      );
+
+    const rzTargets =
+      num(
+        r[ph['RZ Targets']]
+      );
+
+    const inside10 =
+      num(
+        r[ph['Inside 10 Targets']]
+      );
+
+    const rzShare =
+      num(
+        r[ph['Team RZ Share']]
+      );
+
+    const recentRZ =
+      num(
+        r[ph['Last 3 RZ Opps']]
+      );
+
+    const opportunityScore =
+      num(
+        r[ph['Opportunity Score']]
+      );
+
+
+    // ========================================================
+    // NORMALIZED MODEL COMPONENTS
+    // ========================================================
+
+    const positionScore =
+      Math.min(
+        100,
+        posAllowed / 8 * 100
+      );
+
+
+    const recentDefenseScore =
+      Math.min(
+        100,
+        d.last3 / 10 * 100
+      );
+
+
+    const overallDefenseScore =
+      Math.min(
+        100,
+        d.pg / 4 * 100
+      );
+
+
+    const playerSeasonScore =
+      Math.min(
+        100,
+        seasonTD / 8 * 100
+      );
+
+
+    const playerRecentScore =
+      Math.min(
+        100,
+        recentTD / 3 * 100
+      );
+
+
+    // ========================================================
+    // FINAL TD MATCHUP SCORE
+    // ========================================================
+    //
+    // 30% Position-specific defense
+    // 15% Recent defensive vulnerability
+    // 10% Overall defensive TD rate
+    // 15% Player season TD production
+    // 10% Player recent TD production
+    // 20% Actual scoring opportunity
+    //
+    // ========================================================
+
+    const score =
+      Math.round(
+
+        positionScore * 0.30 +
+
+        recentDefenseScore * 0.15 +
+
+        overallDefenseScore * 0.10 +
+
+        playerSeasonScore * 0.15 +
+
+        playerRecentScore * 0.10 +
+
+        opportunityScore * 0.20
+      );
+
+
+    if (
+      score < minimumScore
+    ) continue;
+
+
+    candidates.push({
+
+      player,
+      pos,
+      team,
+      opponent,
+
+      game:
+        opponents[team].game,
+
+      defRank:
+        getPositionRank(
+          opponent,
+          pos,
+          defenses
+        ),
+
+      posAllowed,
+
+      last3:
+        d.last3,
+
+      seasonTD,
+
+      recentTD,
+
+      opportunityScore,
+
+      score,
+
+      reason:
+        buildAdvancedReason(
+          pos,
+          opponent,
+          posAllowed,
+          d.last3,
+          seasonTD,
+          recentTD,
+          rzCarries,
+          goalLine,
+          rzTargets,
+          inside10,
+          rzShare,
+          recentRZ
+        )
+    });
+  }
+
+
+  // ==========================================================
+  // BEST MATCHUPS FIRST
+  // ==========================================================
+
+  candidates.sort(
+    (a, b) =>
+      b.score - a.score
+  );
+
+
+  const output =
+    candidates.map(
+      (p, i) => [
+
+        i + 1,
+
+        p.player,
+
+        p.pos,
+
+        p.team,
+
+        p.opponent,
+
+        p.game,
+
+        '#' + p.defRank,
+
+        p.posAllowed,
+
+        p.last3,
+
+        p.seasonTD,
+
+        p.recentTD,
+
+        p.opportunityScore,
+
+        p.score,
+
+        p.reason
+      ]
+    );
+
+
+  // ==========================================================
+  // OUTPUT
+  // ==========================================================
+
+  targetSheet
+    .getRange('B2')
+    .setValue(week);
+
+
+  targetSheet
+    .getRange('L4')
+    .setValue(
+      'Opportunity Score'
+    );
+
+
+  if (
+    targetSheet.getMaxRows() > 4
+  ) {
+
+    targetSheet
+      .getRange(
+        5,
+        1,
+        targetSheet.getMaxRows() - 4,
+        14
+      )
+      .clearContent();
+  }
+
+
+  if (output.length) {
+
+    ensureSize(
+      targetSheet,
+      output.length + 4,
+      14
+    );
+
+    targetSheet
+      .getRange(
+        5,
+        1,
+        output.length,
+        14
+      )
+      .setValues(output);
+  }
+
+
+  applyTargetHeatmap(
+    targetSheet,
+    output.length
+  );
+}
+
+/***************************************************************
+ * GAME-BY-GAME TD TARGETS
+ *
+ * Takes the best 3 TD candidates from every game.
+ *
+ * IMPORTANT:
+ * Unlike Weekly TD Targets, there is NO minimum-score cutoff.
+ * Every game gets analyzed.
+ ***************************************************************/
+
+function buildGameByGameTargets() {
+
+  const ss = SpreadsheetApp.getActive();
+
+  const week = getCurrentWeek();
+
+  // ==========================================================
+  // CREATE SHEET IF NEEDED
+  // ==========================================================
+
+  let sheet =
+    ss.getSheetByName(
+      NFL.SHEETS.GAME_TARGETS
+    );
+
+  if (!sheet) {
+
+    sheet =
+      ss.insertSheet(
+        NFL.SHEETS.GAME_TARGETS
+      );
+  }
+
+
+  // ==========================================================
+  // LOAD DEFENSE DATA
+  // ==========================================================
+
+  const defSheet =
+    ss.getSheetByName(
+      NFL.SHEETS.DEFENSE
+    );
+
+  const defRows =
+    defSheet
+      .getRange(
+        3,
+        1,
+        Math.max(
+          1,
+          defSheet.getLastRow() - 2
+        ),
+        16
+      )
+      .getValues();
+
+  const dh =
+    columnMap(defRows[0]);
+
+  const defenses = {};
+
+
+  for (let i = 1; i < defRows.length; i++) {
+
+    const r = defRows[i];
+
+    const team =
+      r[dh['Defense']];
+
+    if (!team) continue;
+
+
+    defenses[team] = {
+
+      rank:
+        num(r[dh['Rank']]),
+
+      games:
+        num(r[dh['Games']]),
+
+      total:
+        num(r[dh['Total TD']]),
+
+      pg:
+        num(r[dh['TD/Game']]),
+
+      wr:
+        num(r[dh['WR Rec TD']]),
+
+      te:
+        num(r[dh['TE Rec TD']]),
+
+      rbRec:
+        num(r[dh['RB Rec TD']]),
+
+      rbRush:
+        num(r[dh['RB Rush TD']]),
+
+      qbRush:
+        num(r[dh['QB Rush TD']]),
+
+      last3:
+        num(r[dh['Last 3 TD']])
+    };
+  }
+
+
+  // ==========================================================
+  // LOAD SCHEDULE
+  // ==========================================================
+
+  const schedule =
+    ss.getSheetByName(
+      NFL.SHEETS.SCHEDULE
+    )
+      .getDataRange()
+      .getValues();
+
+  const sh =
+    columnMap(schedule[0]);
+
+  const games = {};
+
+
+  for (let i = 1; i < schedule.length; i++) {
+
+    const r = schedule[i];
+
+    if (
+      num(r[sh['Week']]) !== week
+    ) continue;
+
+
+    const away =
+      r[sh['Away']];
+
+    const home =
+      r[sh['Home']];
+
+    if (!away || !home)
+      continue;
+
+
+    const gameID =
+      r[sh['Game ID']] ||
+      away + '_' + home;
+
+
+    games[gameID] = {
+
+      gameID,
+
+      away,
+
+      home,
+
+      game:
+        formatGameDateTime(
+          r[sh['Date']],
+          r[sh['Time ET']]
+        ),
+
+      players: []
+    };
+  }
+
+
+  // ==========================================================
+  // LOAD PLAYERS
+  // ==========================================================
+
+  const playerRows =
+    ss.getSheetByName(
+      NFL.SHEETS.PLAYERS
+    )
+      .getDataRange()
+      .getValues();
+
+  const ph =
+    columnMap(playerRows[0]);
+
+
+  // ==========================================================
+  // SCORE EVERY ELIGIBLE PLAYER
+  // ==========================================================
+
+  Object.values(games).forEach(game => {
+
+    for (
+      let i = 1;
+      i < playerRows.length;
+      i++
+    ) {
+
+      const r =
+        playerRows[i];
+
+      const player =
+        r[ph['Player']];
+
+      const team =
+  r[ph['Team']];
+
+const pos =
+  String(
+    r[ph['Position']]
+  ).toUpperCase();
+
+const active =
+  String(
+    r[ph['Active']]
+  ).toUpperCase() === 'YES';
+
+
+      if (
+  !player ||
+  !team ||
+  !active ||
+  !['QB', 'RB', 'WR', 'TE']
+    .includes(pos)
+) {
+  continue;
+}
+
+
+      /*
+       * Player must belong to one
+       * of the teams in this game.
+       */
+
+      if (
+        team !== game.away &&
+        team !== game.home
+      ) {
+        continue;
+      }
+
+
+      const opponent =
+        team === game.away
+          ? game.home
+          : game.away;
+
+
+      const d =
+        defenses[opponent];
+
+      if (!d)
+        continue;
+
+
+      // ======================================================
+      // POSITION-SPECIFIC TD ALLOWANCE
+      // ======================================================
+
+      let posAllowed = 0;
+
+
+      if (pos === 'WR') {
+
+        posAllowed =
+          d.wr;
+
+      } else if (pos === 'TE') {
+
+        posAllowed =
+          d.te;
+
+      } else if (pos === 'RB') {
+
+        posAllowed =
+          d.rbRec +
+          d.rbRush;
+
+      } else if (pos === 'QB') {
+
+        posAllowed =
+          d.qbRush;
+      }
+
+
+      // ======================================================
+      // PLAYER DATA
+      // ======================================================
+
+      const seasonTD =
+        num(
+          r[ph['Season TDs']]
+        );
+
+      const recentTD =
+        num(
+          r[ph['Last 3 TDs']]
+        );
+
+      const rzCarries =
+        num(
+          r[ph['RZ Carries']]
+        );
+
+      const goalLine =
+        num(
+          r[ph['Goal Line Carries']]
+        );
+
+      const rzTargets =
+        num(
+          r[ph['RZ Targets']]
+        );
+
+      const inside10 =
+        num(
+          r[ph['Inside 10 Targets']]
+        );
+
+      const rzShare =
+        num(
+          r[ph['Team RZ Share']]
+        );
+
+      const recentRZ =
+        num(
+          r[ph['Last 3 RZ Opps']]
+        );
+
+      const opportunityScore =
+        num(
+          r[ph['Opportunity Score']]
+        );
+
+
+      // ======================================================
+      // SAME MODEL AS WEEKLY TD TARGETS
+      // ======================================================
+
+      const positionScore =
+        Math.min(
+          100,
+          posAllowed / 8 * 100
+        );
+
+
+      const recentDefenseScore =
+        Math.min(
+          100,
+          d.last3 / 10 * 100
+        );
+
+
+      const overallDefenseScore =
+        Math.min(
+          100,
+          d.pg / 4 * 100
+        );
+
+
+      const playerSeasonScore =
+        Math.min(
+          100,
+          seasonTD / 8 * 100
+        );
+
+
+      const playerRecentScore =
+        Math.min(
+          100,
+          recentTD / 3 * 100
+        );
+
+
+      const score =
+        Math.round(
+
+          positionScore * 0.30 +
+
+          recentDefenseScore * 0.15 +
+
+          overallDefenseScore * 0.10 +
+
+          playerSeasonScore * 0.15 +
+
+          playerRecentScore * 0.10 +
+
+          opportunityScore * 0.20
+        );
+
+
+      // ======================================================
+      // ADD PLAYER TO GAME
+      // ======================================================
+
+      game.players.push({
+
+        player,
+
+        team,
+
+        pos,
+
+        opponent,
+
+        score,
+
+        strength:
+          getTDStrength(score),
+
+        posAllowed,
+
+        seasonTD,
+
+        recentTD,
+
+        opportunityScore,
+
+        rzCarries,
+
+        goalLine,
+
+        rzTargets,
+
+        inside10,
+
+        rzShare,
+
+        recentRZ,
+
+        reason:
+          buildAdvancedReason(
+            pos,
+            opponent,
+            posAllowed,
+            d.last3,
+            seasonTD,
+            recentTD,
+            rzCarries,
+            goalLine,
+            rzTargets,
+            inside10,
+            rzShare,
+            recentRZ
+          )
+      });
+    }
+
+
+    /*
+     * Highest rated players first.
+     */
+
+    game.players.sort(
+      (a, b) =>
+        b.score - a.score
+    );
+
+
+    /*
+     * Keep only top 3.
+     */
+
+    game.players =
+      game.players.slice(0, 3);
+  });
+
+
+  // ==========================================================
+  // BUILD OUTPUT
+  // ==========================================================
+
+  const output = [[
+    'Week',
+    'Game',
+    'Game Time',
+    'Rank',
+    'Player',
+    'Pos',
+    'Team',
+    'Opponent',
+    'TD Score',
+    'Strength',
+    'Opportunity',
+    'Why It Rates',
+    'Game Summary'
+  ]];
+
+
+  Object.values(games)
+    .forEach(game => {
+
+      const summary =
+        buildGameTDSummary(
+          game
+        );
+
+
+      /*
+       * Normally there will be 3 players,
+       * but don't assume there always are.
+       */
+
+      if (!game.players.length) {
+
+        output.push([
+          week,
+          game.away +
+            ' @ ' +
+            game.home,
+          game.game,
+          '',
+          '',
+          '',
+          '',
+          '',
+          '',
+          '',
+          '',
+          '',
+          'No qualifying player data available.'
+        ]);
+
+        return;
+      }
+
+
+      game.players.forEach(
+        (p, index) => {
+
+          output.push([
+
+            week,
+
+            game.away +
+              ' @ ' +
+              game.home,
+
+            game.game,
+
+            index + 1,
+
+            p.player,
+
+            p.pos,
+
+            p.team,
+
+            p.opponent,
+
+            p.score,
+
+            p.strength,
+
+            p.opportunityScore,
+
+            p.reason,
+
+            index === 0
+              ? summary
+              : ''
+          ]);
+        }
+      );
+    });
+
+
+  // ==========================================================
+  // WRITE SHEET
+  // ==========================================================
+
+  sheet.clear();
+
+
+  ensureSize(
+    sheet,
+    output.length,
+    output[0].length
+  );
+
+
+  sheet
+    .getRange(
+      1,
+      1,
+      output.length,
+      output[0].length
+    )
+    .setValues(output);
+
+
+  // ==========================================================
+  // HEADER
+  // ==========================================================
+
+  sheet
+    .getRange(
+      1,
+      1,
+      1,
+      output[0].length
+    )
+    .setBackground('#0d293f')
+    .setFontColor('#ffffff')
+    .setFontWeight('bold')
+    .setWrap(true);
+
+
+  sheet.setFrozenRows(1);
+
+
+  // ==========================================================
+  // FORMATTING
+  // ==========================================================
+
+  if (output.length > 1) {
+
+    sheet
+      .getRange(
+        2,
+        1,
+        output.length - 1,
+        output[0].length
+      )
+      .setVerticalAlignment(
+        'middle'
+      );
+
+
+    /*
+     * Explanation + summary wrapping
+     */
+
+    sheet
+      .getRange(
+        2,
+        12,
+        output.length - 1,
+        2
+      )
+      .setWrap(true);
+
+
+    /*
+     * TD Score centered
+     */
+
+    sheet
+      .getRange(
+        2,
+        9,
+        output.length - 1,
+        3
+      )
+      .setHorizontalAlignment(
+        'center'
+      );
+  }
+
+
+  // ==========================================================
+  // COLUMN WIDTHS
+  // ==========================================================
+
+  const widths = [
+    55,   // Week
+    110,  // Game
+    145,  // Time
+    50,   // Rank
+    165,  // Player
+    55,   // Pos
+    60,   // Team
+    75,   // Opponent
+    75,   // TD Score
+    85,   // Strength
+    90,   // Opportunity
+    330,  // Why
+    430   // Summary
+  ];
+
+
+  widths.forEach(
+    (width, index) => {
+
+      sheet.setColumnWidth(
+        index + 1,
+        width
+      );
+    }
+  );
+
+
+  // ==========================================================
+  // CONDITIONAL FORMATTING
+  // ==========================================================
+
+  applyGameTargetFormatting(
+    sheet,
+    output.length - 1
+  );
+}
+
+function getTDStrength(score) {
+
+  if (score >= 80)
+    return '🔥 Strong';
+
+  if (score >= 70)
+    return 'Strong';
+
+  if (score >= 60)
+    return 'Good';
+
+  if (score >= 50)
+    return 'Lean';
+
+  return 'Weak';
+}
+
+function buildGameTDSummary(game) {
+
+  if (
+    !game.players ||
+    !game.players.length
+  ) {
+    return 'No player data available.';
+  }
+
+
+  const p1 =
+    game.players[0];
+
+  const p2 =
+    game.players[1];
+
+  const p3 =
+    game.players[2];
+
+
+  let summary =
+    'Top TD angle: ' +
+    p1.player +
+    ' (' +
+    p1.team +
+    ') at ' +
+    p1.score +
+    '/100. ';
+
+
+  // ==========================================================
+  // EXPLAIN TOP PLAY
+  // ==========================================================
+
+  if (p1.posAllowed >= 5) {
+
+    summary +=
+      p1.opponent +
+      ' has been vulnerable to ' +
+      p1.pos +
+      ' touchdowns. ';
+  }
+
+
+  if (
+    p1.goalLine >= 4
+  ) {
+
+    summary +=
+      p1.player +
+      ' has strong goal-line usage with ' +
+      p1.goalLine +
+      ' carries inside the 5. ';
+
+  } else if (
+    p1.inside10 >= 4
+  ) {
+
+    summary +=
+      p1.player +
+      ' has ' +
+      p1.inside10 +
+      ' targets inside the 10. ';
+
+  } else if (
+    p1.opportunityScore >= 80
+  ) {
+
+    summary +=
+      'His scoring-opportunity profile is elite. ';
+  }
+
+
+  // ==========================================================
+  // OTHER GOOD OPTIONS
+  // ==========================================================
+
+  const alternatives = [];
+
+
+  if (
+    p2 &&
+    p2.score >= 60
+  ) {
+
+    alternatives.push(
+      p2.player +
+      ' (' +
+      p2.score +
+      ')'
+    );
+  }
+
+
+  if (
+    p3 &&
+    p3.score >= 60
+  ) {
+
+    alternatives.push(
+      p3.player +
+      ' (' +
+      p3.score +
+      ')'
+    );
+  }
+
+
+  if (alternatives.length) {
+
+    summary +=
+      'Other favorable options: ' +
+      alternatives.join(', ') +
+      '.';
+  }
+
+
+  // ==========================================================
+  // WEAK GAME WARNING
+  // ==========================================================
+
+  if (p1.score < 60) {
+
+    summary =
+      'No strong Anytime TD spot stands out. ' +
+      p1.player +
+      ' is the highest-rated option at only ' +
+      p1.score +
+      '/100, so this profiles as a lower-priority game.';
+  }
+
+
+  return summary.trim();
+}
+
+function applyGameTargetFormatting(
+  sheet,
+  rows
+) {
+
+  if (!rows)
+    return;
+
+  const scoreRange =
+    sheet.getRange(
+      2,
+      9,
+      rows,
+      1
+    );
+
+  const rules = [];
+
+  // 80+
+  rules.push(
+    SpreadsheetApp
+      .newConditionalFormatRule()
+      .whenNumberGreaterThanOrEqualTo(80)
+      .setBackground('#b6d7a8')
+      .setRanges([scoreRange])
+      .build()
+  );
+
+  // 70–79
+  rules.push(
+    SpreadsheetApp
+      .newConditionalFormatRule()
+      .whenNumberBetween(70, 79)
+      .setBackground('#d9ead3')
+      .setRanges([scoreRange])
+      .build()
+  );
+
+  // 60–69
+  rules.push(
+    SpreadsheetApp
+      .newConditionalFormatRule()
+      .whenNumberBetween(60, 69)
+      .setBackground('#fff2cc')
+      .setRanges([scoreRange])
+      .build()
+  );
+
+  // 50–59
+  rules.push(
+    SpreadsheetApp
+      .newConditionalFormatRule()
+      .whenNumberBetween(50, 59)
+      .setBackground('#fce5cd')
+      .setRanges([scoreRange])
+      .build()
+  );
+
+  // Under 50
+  rules.push(
+    SpreadsheetApp
+      .newConditionalFormatRule()
+      .whenNumberLessThan(50)
+      .setBackground('#f4cccc')
+      .setRanges([scoreRange])
+      .build()
+  );
+
+  sheet.setConditionalFormatRules(
+    rules
+  );
+}
+
+function buildWRMatchups() {
+
+  const ss = SpreadsheetApp.getActive();
+
+  const playersSheet =
+    ss.getSheetByName('Players');
+
+  const defenseSheet =
+    ss.getSheetByName('Defense Rankings');
+
+  const scheduleSheet =
+    ss.getSheetByName('Schedule');
+
+  const cbSheet =
+    ss.getSheetByName('CB Coverage');
+
+  const wrUsageSheet =
+    ss.getSheetByName('WR Usage');
+
+
+  if (
+    !playersSheet ||
+    !defenseSheet ||
+    !scheduleSheet ||
+    !cbSheet ||
+    !wrUsageSheet
+  ) {
+    throw new Error(
+      'Missing Players, Defense Rankings, Schedule, CB Coverage, or WR Usage sheet.'
+    );
+  }
+
+
+  const currentWeek =
+    getCurrentWeek();
+
+
+  // ==========================================================
+  // READ DATA
+  // ==========================================================
+
+  const players =
+    playersSheet
+      .getDataRange()
+      .getValues();
+
+  const defenses =
+    defenseSheet
+      .getDataRange()
+      .getValues();
+
+  const schedule =
+    scheduleSheet
+      .getDataRange()
+      .getValues();
+
+  const cbData =
+    cbSheet
+      .getDataRange()
+      .getValues();
+
+  const wrUsageData =
+    wrUsageSheet
+      .getDataRange()
+      .getValues();
+
+
+  // ==========================================================
+  // WR USAGE LOOKUP
+  // ==========================================================
+
+  /*
+   * WR Usage columns:
+   *
+   * B  WR
+   * C  Team
+   * H  Targets/Game
+   * I  Target Share
+   * L  Route Participation
+   * S  Yards/Route Run
+   * U  Air Yards Share
+   * V  aDOT
+   * W  WOPR
+   * AD WR Usage Score
+   * AE Usage Grade
+   */
+
+  const wrUsageMap = {};
+
+
+  for (
+    let i = 1;
+    i < wrUsageData.length;
+    i++
+  ) {
+
+    const row =
+      wrUsageData[i];
+
+    const player =
+      String(row[1] || '')
+        .trim()
+        .toLowerCase();
+
+    const team =
+      normalizeNFLTeam(row[2]);
+
+
+    if (
+      !player ||
+      !team
+    ) {
+      continue;
+    }
+
+
+    const key =
+      player + '|' + team;
+
+
+    wrUsageMap[key] = {
+
+      targetsPerGame:
+        numOrZero(row[7]),
+
+      targetShare:
+        nullableNumber(row[8]),
+
+      routeParticipation:
+        nullableNumber(row[11]),
+
+      yprr:
+        nullableNumber(row[18]),
+
+      airYardsShare:
+        nullableNumber(row[20]),
+
+      adot:
+        nullableNumber(row[21]),
+
+      wopr:
+        nullableNumber(row[22]),
+
+      usageScore:
+        numOrZero(row[29]),
+
+      grade:
+        row[30] || ''
+    };
+  }
+
+
+  // ==========================================================
+  // DEFENSE LOOKUP
+  // ==========================================================
+
+  const defenseMap = {};
+
+
+  for (
+    let i = 1;
+    i < defenses.length;
+    i++
+  ) {
+
+    const row =
+      defenses[i];
+
+    const defense =
+      normalizeNFLTeam(row[1]);
+
+
+    if (!defense) {
+      continue;
+    }
+
+
+    defenseMap[defense] = {
+
+      rank:
+        numOrZero(row[0]),
+
+      games:
+        numOrZero(row[2]),
+
+      totalTD:
+        numOrZero(row[3]),
+
+      tdPerGame:
+        numOrZero(row[4]),
+
+      passTD:
+        numOrZero(row[5]),
+
+      wrTD:
+        numOrZero(row[7]),
+
+      last3TD:
+        numOrZero(row[12]),
+
+      last3PerGame:
+        numOrZero(row[13]),
+
+      bestAttack:
+        row[14] || '',
+
+      trend:
+        row[15] || ''
+    };
+  }
+
+
+  // ==========================================================
+  // BUILD SECONDARY / CB TEAM PROFILE
+  // ==========================================================
+
+  const secondaryMap = {};
+
+
+  for (
+    let i = 1;
+    i < cbData.length;
+    i++
+  ) {
+
+    const row =
+      cbData[i];
+
+    const team =
+      normalizeNFLTeam(row[1]);
+
+
+    if (!team) {
+      continue;
+    }
+
+
+    if (!secondaryMap[team]) {
+
+      secondaryMap[team] = {
+        corners: []
+      };
+    }
+
+
+    secondaryMap[team]
+      .corners
+      .push({
+
+        name:
+          row[0],
+
+        targets:
+          numOrZero(row[4]),
+
+        td:
+          numOrZero(row[7]),
+
+        ypt:
+          numOrZero(row[9]),
+
+        epa:
+          nullableNumber(row[10]),
+
+        openRate:
+          nullableNumber(row[16]),
+
+        wideOpenRate:
+          nullableNumber(row[17]),
+
+        adot:
+          nullableNumber(row[19]),
+
+        manRate:
+          nullableNumber(row[20]),
+
+        zoneRate:
+          nullableNumber(row[21]),
+
+        singleHigh:
+          nullableNumber(row[22]),
+
+        twoHigh:
+          nullableNumber(row[23]),
+
+        trend:
+          row[42] || '',
+
+        weakness:
+          numOrZero(row[43]),
+
+        attackLevel:
+          row[44] || ''
+      });
+  }
+
+
+  // ==========================================================
+  // TURN CBs INTO TEAM SECONDARY PROFILES
+  // ==========================================================
+
+  Object.keys(secondaryMap)
+    .forEach(team => {
+
+      const corners =
+        secondaryMap[team].corners;
+
+
+      corners.sort(
+        (a, b) =>
+          b.weakness -
+          a.weakness
+      );
+
+
+      let weightedScore = 0;
+      let totalWeight = 0;
+
+      let weightedAdot = 0;
+      let adotWeight = 0;
+
+      let weightedMan = 0;
+      let manWeight = 0;
+
+      let weightedZone = 0;
+      let zoneWeight = 0;
+
+      let totalCBTD = 0;
+
+
+      corners.forEach(cb => {
+
+        const weight =
+          Math.max(
+            1,
+            cb.targets
+          );
+
+
+        weightedScore +=
+          cb.weakness *
+          weight;
+
+        totalWeight +=
+          weight;
+
+
+        totalCBTD +=
+          cb.td;
+
+
+        if (cb.adot !== null) {
+
+          weightedAdot +=
+            cb.adot *
+            weight;
+
+          adotWeight +=
+            weight;
+        }
+
+
+        if (cb.manRate !== null) {
+
+          weightedMan +=
+            cb.manRate *
+            weight;
+
+          manWeight +=
+            weight;
+        }
+
+
+        if (cb.zoneRate !== null) {
+
+          weightedZone +=
+            cb.zoneRate *
+            weight;
+
+          zoneWeight +=
+            weight;
+        }
+      });
+
+
+      secondaryMap[team].rating =
+        totalWeight
+          ? Math.round(
+              weightedScore /
+              totalWeight
+            )
+          : 50;
+
+
+      secondaryMap[team].adot =
+        adotWeight
+          ? weightedAdot /
+            adotWeight
+          : null;
+
+
+      secondaryMap[team].manRate =
+        manWeight
+          ? weightedMan /
+            manWeight
+          : null;
+
+
+      secondaryMap[team].zoneRate =
+        zoneWeight
+          ? weightedZone /
+            zoneWeight
+          : null;
+
+
+      secondaryMap[team].cbTD =
+        totalCBTD;
+
+
+      secondaryMap[team].worstCB =
+        corners.length
+          ? corners[0]
+          : null;
+
+
+      secondaryMap[team].secondWorstCB =
+        corners.length > 1
+          ? corners[1]
+          : null;
+    });
+
+
+  // ==========================================================
+  // THIS WEEK'S SCHEDULE LOOKUP
+  // ==========================================================
+
+  const matchupMap = {};
+
+
+  for (
+    let i = 1;
+    i < schedule.length;
+    i++
+  ) {
+
+    const row =
+      schedule[i];
+
+    const week =
+      Number(row[1]);
+
+
+    if (week !== currentWeek) {
+      continue;
+    }
+
+
+    const away =
+      normalizeNFLTeam(row[4]);
+
+    const home =
+      normalizeNFLTeam(row[5]);
+
+
+    if (
+      !away ||
+      !home
+    ) {
+      continue;
+    }
+
+
+    matchupMap[away] = {
+
+      opponent:
+        home,
+
+      location:
+        'Away',
+
+      date:
+        row[2],
+
+      time:
+        row[3],
+
+      gameId:
+        row[8],
+
+      status:
+        row[9]
+    };
+
+
+    matchupMap[home] = {
+
+      opponent:
+        away,
+
+      location:
+        'Home',
+
+      date:
+        row[2],
+
+      time:
+        row[3],
+
+      gameId:
+        row[8],
+
+      status:
+        row[9]
+    };
+  }
+
+
+  // ==========================================================
+  // OUTPUT
+  // ==========================================================
+
+  const output = [[
+
+    'Rank',
+    'WR',
+    'Team',
+    'Opponent',
+    'H/A',
+
+    'Season TD',
+    'Last 3 TD',
+
+    'RZ Targets',
+    'Inside 10 Targets',
+    'RZ Opportunities',
+    'Team RZ Share',
+    'Last 3 RZ Opps',
+    'TD/RZ Opportunity Score',
+
+    'Targets / Game',
+    'Target Share',
+    'Route Participation',
+    'Yards / Route Run',
+    'Air Yards Share',
+    'WR aDOT',
+    'WOPR',
+    'FTN WR Usage Score',
+    'WR Usage Grade',
+
+    'Opp WR TD Allowed',
+    'Opp Pass TD',
+    'Opp TD / Game',
+    'Opp Last 3 TD / Game',
+    'Defense Trend',
+
+    'Secondary Rating',
+
+    'Worst CB',
+    'Worst CB Rating',
+    'Worst CB Trend',
+
+    '2nd Weak CB',
+    '2nd Weak Rating',
+
+    'CB TD Allowed',
+    'Secondary aDOT',
+    'Man Rate',
+    'Zone Rate',
+
+    'Defense WR Score',
+    'Coverage Score',
+
+    'WR Matchup Score',
+    'Matchup Grade',
+
+    'Summary'
+  ]];
+
+
+  // ==========================================================
+  // BUILD EACH WR
+  // ==========================================================
+
+  for (
+    let i = 1;
+    i < players.length;
+    i++
+  ) {
+
+    const row =
+      players[i];
+
+
+    const position =
+      String(row[3] || '')
+        .trim()
+        .toUpperCase();
+
+
+    if (position !== 'WR') {
+      continue;
+    }
+
+
+    if (!isActiveNFLPlayer(row[14])) {
+      continue;
+    }
+
+
+    const player =
+      row[1];
+
+
+    const team =
+      normalizeNFLTeam(row[2]);
+
+
+    if (
+      !player ||
+      !team
+    ) {
+      continue;
+    }
+
+
+    const game =
+      matchupMap[team];
+
+
+    if (!game) {
+      continue;
+    }
+
+
+    const opponent =
+      game.opponent;
+
+
+    const defense =
+      defenseMap[opponent] || {};
+
+
+    const secondary =
+      secondaryMap[opponent] || {};
+
+
+    const worstCB =
+      secondary.worstCB || {};
+
+
+    const secondCB =
+      secondary.secondWorstCB || {};
+
+
+    // ========================================================
+    // PLAYER TD / RED-ZONE DATA
+    // ========================================================
+
+    const seasonTD =
+      numOrZero(row[4]);
+
+    const last3TD =
+      numOrZero(row[5]);
+
+    const rzTargets =
+      numOrZero(row[8]);
+
+    const inside10 =
+      numOrZero(row[9]);
+
+    const rzOpps =
+      numOrZero(row[10]);
+
+    const rzShare =
+      numOrZero(row[11]);
+
+    const last3RZOpps =
+      numOrZero(row[12]);
+
+    const opportunityScore =
+      numOrZero(row[13]);
+
+
+    // ========================================================
+    // FTN WR USAGE
+    // ========================================================
+
+    const usageKey =
+      String(player)
+        .trim()
+        .toLowerCase() +
+      '|' +
+      team;
+
+
+    const wrUsage =
+      wrUsageMap[usageKey] || {};
+
+
+    const targetsPerGame =
+      numOrZero(
+        wrUsage.targetsPerGame
+      );
+
+
+    const targetShare =
+      wrUsage.targetShare !== undefined
+        ? wrUsage.targetShare
+        : null;
+
+
+    const routeParticipation =
+      wrUsage.routeParticipation !== undefined
+        ? wrUsage.routeParticipation
+        : null;
+
+
+    const yprr =
+      wrUsage.yprr !== undefined
+        ? wrUsage.yprr
+        : null;
+
+
+    const airYardsShare =
+      wrUsage.airYardsShare !== undefined
+        ? wrUsage.airYardsShare
+        : null;
+
+
+    const wrAdot =
+      wrUsage.adot !== undefined
+        ? wrUsage.adot
+        : null;
+
+
+    const wopr =
+      wrUsage.wopr !== undefined
+        ? wrUsage.wopr
+        : null;
+
+
+    const ftnUsageScore =
+      wrUsage.usageScore !== undefined
+        ? numOrZero(
+            wrUsage.usageScore
+          )
+        : 50;
+
+
+    const wrUsageGrade =
+      wrUsage.grade || '';
+
+
+    // ========================================================
+    // DEFENSE VS WR SCORE
+    // ========================================================
+
+    const wrTD =
+      numOrZero(
+        defense.wrTD
+      );
+
+
+    const passTD =
+      numOrZero(
+        defense.passTD
+      );
+
+
+    const tdPerGame =
+      numOrZero(
+        defense.tdPerGame
+      );
+
+
+    const last3PerGame =
+      numOrZero(
+        defense.last3PerGame
+      );
+
+
+    const wrTDScore =
+      clamp100(
+        wrTD / 8 * 100
+      );
+
+
+    const passTDScore =
+      clamp100(
+        passTD / 12 * 100
+      );
+
+
+    const tdGameScore =
+      clamp100(
+        tdPerGame / 4 * 100
+      );
+
+
+    const recentDefenseScore =
+      clamp100(
+        last3PerGame / 4 * 100
+      );
+
+
+    const defenseWRScore =
+      Math.round(
+
+        wrTDScore * 0.45 +
+
+        passTDScore * 0.20 +
+
+        tdGameScore * 0.15 +
+
+        recentDefenseScore * 0.20
+      );
+
+
+    // ========================================================
+    // ADVANCED COVERAGE SCORE
+    // ========================================================
+
+    const secondaryRating =
+      secondary.rating !== undefined
+        ? secondary.rating
+        : 50;
+
+
+    const worstRating =
+      worstCB.weakness !== undefined
+        ? worstCB.weakness
+        : 50;
+
+
+    const secondRating =
+      secondCB.weakness !== undefined
+        ? secondCB.weakness
+        : 50;
+
+
+    const coverageScore =
+      Math.round(
+
+        secondaryRating * 0.50 +
+
+        worstRating * 0.30 +
+
+        secondRating * 0.20
+      );
+
+
+    // ========================================================
+    // TD / RED-ZONE OPPORTUNITY SCORE
+    // ========================================================
+
+    const normalizedOpportunity =
+      clamp100(
+        opportunityScore
+      );
+
+
+    const shareScore =
+      clamp100(
+        rzShare * 100
+      );
+
+
+    const recentRZScore =
+      clamp100(
+        last3RZOpps / 6 * 100
+      );
+
+
+    const inside10Score =
+      clamp100(
+        inside10 / 5 * 100
+      );
+
+
+    const tdRZScore =
+      Math.round(
+
+        normalizedOpportunity * 0.50 +
+
+        shareScore * 0.20 +
+
+        recentRZScore * 0.15 +
+
+        inside10Score * 0.15
+      );
+
+
+    // ========================================================
+    // FINAL WR MATCHUP SCORE
+    // ========================================================
+
+    /*
+     * V2 MODEL
+     *
+     * 35% FTN receiving usage
+     * 25% TD / red-zone opportunity
+     * 25% opponent WR TD weakness
+     * 15% advanced CB / secondary coverage
+     */
+
+    const matchupScore =
+      Math.round(
+
+        ftnUsageScore * 0.35 +
+
+        tdRZScore * 0.25 +
+
+        defenseWRScore * 0.25 +
+
+        coverageScore * 0.15
+      );
+
+
+    // ========================================================
+    // GRADE
+    // ========================================================
+
+    let grade;
+
+
+    if (matchupScore >= 75) {
+
+      grade =
+        '🔥 Elite';
+
+    } else if (matchupScore >= 65) {
+
+      grade =
+        'Strong';
+
+    } else if (matchupScore >= 55) {
+
+      grade =
+        'Favorable';
+
+    } else if (matchupScore >= 45) {
+
+      grade =
+        'Neutral';
+
+    } else {
+
+      grade =
+        'Weak';
+    }
+
+
+    // ========================================================
+    // SUMMARY
+    // ========================================================
+
+    const reasons = [];
+
+
+    if (ftnUsageScore >= 85) {
+
+      reasons.push(
+        'elite receiving usage'
+      );
+
+    } else if (ftnUsageScore >= 75) {
+
+      reasons.push(
+        'high receiving usage'
+      );
+    }
+
+
+    if (
+      targetShare !== null &&
+      targetShare >= 0.25
+    ) {
+
+      reasons.push(
+        'commands a strong target share'
+      );
+    }
+
+
+    if (targetsPerGame >= 8) {
+
+      reasons.push(
+        'heavy weekly target volume'
+      );
+    }
+
+
+    if (tdRZScore >= 70) {
+
+      reasons.push(
+        'strong red-zone TD opportunity'
+      );
+    }
+
+
+    if (inside10 >= 3) {
+
+      reasons.push(
+        'receives valuable inside-10 targets'
+      );
+    }
+
+
+    if (wrTDScore >= 70) {
+
+      reasons.push(
+        'opponent allows heavy WR TD production'
+      );
+    }
+
+
+    if (coverageScore >= 65) {
+
+      reasons.push(
+        'secondary grades as highly attackable'
+      );
+    }
+
+
+    if (worstRating >= 70) {
+
+      reasons.push(
+        'opposing secondary features a Target-level vulnerable CB'
+      );
+    }
+
+
+    if (last3PerGame >= 3) {
+
+      reasons.push(
+        'defense has struggled recently'
+      );
+    }
+
+
+    if (
+      String(worstCB.trend || '')
+        .includes('Getting Worse')
+    ) {
+
+      reasons.push(
+        'top vulnerable CB is trending worse'
+      );
+    }
+
+
+    if (!reasons.length) {
+
+      reasons.push(
+        'no major matchup advantage identified'
+      );
+    }
+
+
+    let summary =
+      reasons
+        .slice(0, 4)
+        .join('; ');
+
+
+    summary =
+      summary.charAt(0)
+        .toUpperCase() +
+      summary.slice(1) +
+      '.';
+
+
+    // ========================================================
+    // WRITE
+    // ========================================================
+
+    output.push([
+
+      '',
+
+      player,
+      team,
+      opponent,
+      game.location,
+
+      seasonTD,
+      last3TD,
+
+      rzTargets,
+      inside10,
+      rzOpps,
+      rzShare,
+      last3RZOpps,
+      tdRZScore,
+
+      targetsPerGame,
+      nullableOutput(
+        targetShare
+      ),
+      nullableOutput(
+        routeParticipation
+      ),
+      nullableOutput(
+        yprr
+      ),
+      nullableOutput(
+        airYardsShare
+      ),
+      nullableOutput(
+        wrAdot
+      ),
+      nullableOutput(
+        wopr
+      ),
+      ftnUsageScore,
+      wrUsageGrade,
+
+      wrTD,
+      passTD,
+      tdPerGame,
+      last3PerGame,
+      defense.trend || '',
+
+      secondaryRating,
+
+      worstCB.name || '',
+      worstRating,
+      worstCB.trend || '',
+
+      secondCB.name || '',
+      secondRating,
+
+      secondary.cbTD || 0,
+      nullableOutput(
+        secondary.adot
+      ),
+      nullableOutput(
+        secondary.manRate
+      ),
+      nullableOutput(
+        secondary.zoneRate
+      ),
+
+      defenseWRScore,
+      coverageScore,
+
+      matchupScore,
+      grade,
+
+      summary
+    ]);
+  }
+
+
+  // ==========================================================
+  // SORT BY MATCHUP SCORE
+  // ==========================================================
+
+  const header =
+    output.shift();
+
+
+  /*
+   * WR Matchup Score = column AN in the output array.
+   * Zero-based array index = 39.
+   */
+
+  output.sort(
+    (a, b) =>
+      Number(b[39]) -
+      Number(a[39])
+  );
+
+
+  output.forEach(
+    (row, index) => {
+
+      row[0] =
+        index + 1;
+    }
+  );
+
+
+  output.unshift(header);
+
+
+  // ==========================================================
+  // CREATE / CLEAR SHEET
+  // ==========================================================
+
+  let sheet =
+    ss.getSheetByName(
+      'WR Matchups'
+    );
+
+
+  if (!sheet) {
+
+    sheet =
+      ss.insertSheet(
+        'WR Matchups'
+      );
+  }
+
+
+  sheet.clear();
+
+
+  ensureSize(
+    sheet,
+    output.length,
+    output[0].length
+  );
+
+
+  sheet
+    .getRange(
+      1,
+      1,
+      output.length,
+      output[0].length
+    )
+    .setValues(
+      output
+    );
+
+
+  // ==========================================================
+  // HEADER
+  // ==========================================================
+
+  sheet
+    .getRange(
+      1,
+      1,
+      1,
+      output[0].length
+    )
+    .setBackground(
+      '#0d293f'
+    )
+    .setFontColor(
+      '#ffffff'
+    )
+    .setFontWeight(
+      'bold'
+    )
+    .setWrap(
+      true
+    );
+
+
+  sheet.setFrozenRows(1);
+
+
+  // ==========================================================
+  // FORMATTING
+  // ==========================================================
+
+  if (output.length > 1) {
+
+    const rows =
+      output.length - 1;
+
+
+    // Team RZ Share
+
+    sheet
+      .getRange(
+        2,
+        11,
+        rows,
+        1
+      )
+      .setNumberFormat(
+        '0.0%'
+      );
+
+
+    // Target Share
+
+    sheet
+      .getRange(
+        2,
+        15,
+        rows,
+        1
+      )
+      .setNumberFormat(
+        '0.0%'
+      );
+
+
+    // Route Participation
+
+    sheet
+      .getRange(
+        2,
+        16,
+        rows,
+        1
+      )
+      .setNumberFormat(
+        '0.0%'
+      );
+
+
+    // Air Yards Share
+
+    sheet
+      .getRange(
+        2,
+        18,
+        rows,
+        1
+      )
+      .setNumberFormat(
+        '0.0%'
+      );
+
+
+    // Targets/Game, YPRR, WR aDOT, WOPR
+
+    [
+      14,
+      17,
+      19,
+      20
+    ].forEach(col => {
+
+      sheet
+        .getRange(
+          2,
+          col,
+          rows,
+          1
+        )
+        .setNumberFormat(
+          '0.0'
+        );
+    });
+
+    // Secondary Rating
+
+sheet
+  .getRange(
+    2,
+    28,
+    rows,
+    1
+  )
+  .setNumberFormat(
+    '0'
+  );
+
+    // Secondary aDOT
+
+    sheet
+      .getRange(
+        2,
+        35,
+        rows,
+        1
+      )
+      .setNumberFormat(
+        '0.0'
+      );
+
+
+    // Man / Zone
+
+    sheet
+      .getRange(
+        2,
+        36,
+        rows,
+        2
+      )
+      .setNumberFormat(
+        '0.0%'
+      );
+
+
+    // Final WR Matchup Score = column AN = 40
+
+    const scoreRange =
+      sheet.getRange(
+        2,
+        40,
+        rows,
+        1
+      );
+
+
+    const rules = [];
+
+
+    rules.push(
+
+      SpreadsheetApp
+        .newConditionalFormatRule()
+        .whenNumberGreaterThanOrEqualTo(75)
+        .setBackground('#b6d7a8')
+        .setRanges([scoreRange])
+        .build()
+    );
+
+
+    rules.push(
+
+      SpreadsheetApp
+        .newConditionalFormatRule()
+        .whenNumberBetween(
+          65,
+          74.999
+        )
+        .setBackground('#d9ead3')
+        .setRanges([scoreRange])
+        .build()
+    );
+
+
+    rules.push(
+
+      SpreadsheetApp
+        .newConditionalFormatRule()
+        .whenNumberBetween(
+          55,
+          64.999
+        )
+        .setBackground('#fff2cc')
+        .setRanges([scoreRange])
+        .build()
+    );
+
+
+    rules.push(
+
+      SpreadsheetApp
+        .newConditionalFormatRule()
+        .whenNumberLessThan(45)
+        .setBackground('#f4cccc')
+        .setRanges([scoreRange])
+        .build()
+    );
+
+
+    sheet.setConditionalFormatRules(
+      rules
+    );
+  }
+
+
+  // ==========================================================
+  // COLUMN WIDTHS
+  // ==========================================================
+
+  sheet.autoResizeColumns(
+    1,
+    output[0].length
+  );
+
+
+  sheet.setColumnWidth(
+    2,
+    175
+  );
+
+  sheet.setColumnWidth(
+    3,
+    90
+  );
+
+  sheet.setColumnWidth(
+    4,
+    90
+  );
+
+  sheet.setColumnWidth(
+    29,
+    170
+  );
+
+  sheet.setColumnWidth(
+    32,
+    170
+  );
+
+  sheet.setColumnWidth(
+    42,
+    500
+  );
+
+
+  // ==========================================================
+  // NOTE
+  // ==========================================================
+
+  sheet
+    .getRange('A1')
+    .setNote(
+      'Week ' +
+      currentWeek +
+      ' WR Matchups V2. Final score = 35% FTN WR Usage + 25% TD/RZ Opportunity + 25% Defense vs WR + 15% Advanced Coverage. Individual CBs identify secondary vulnerabilities and are not claimed shadow assignments.'
+    );
+
+
+  ss.toast(
+    'Week ' +
+    currentWeek +
+    ' WR Matchups V2 built!',
+    'NFL TD Tracker',
+    5
+  );
+}
+
+
+function numOrZero(value) {
+
+  const n =
+    Number(value);
+
+  return Number.isFinite(n)
+    ? n
+    : 0;
+}
+
+
+function nullableNumber(value) {
+
+  if (
+    value === '' ||
+    value === null ||
+    value === undefined
+  ) {
+    return null;
+  }
+
+  const n =
+    Number(value);
+
+  return Number.isFinite(n)
+    ? n
+    : null;
+}
+
+
+function isActiveNFLPlayer(value) {
+
+  if (value === true) {
+    return true;
+  }
+
+  const text =
+    String(value || '')
+      .trim()
+      .toLowerCase();
+
+  return (
+    text === 'true' ||
+    text === 'yes' ||
+    text === 'active' ||
+    text === '1' ||
+    text === '✓'
+  );
+}
+
+
+/***************************************************************
+ * CB COVERAGE
+ *
+ * FTN coverage data:
+ *   - season performance
+ *   - last 3 completed weeks
+ *   - sample-size reliability
+ *   - recent trend
+ *
+ * Higher Final Coverage Rating = CB we are more interested
+ * in attacking with opposing WRs.
+ ***************************************************************/
+
+function buildCBCoverage() {
+
+  const ss = SpreadsheetApp.getActive();
+
+  const currentWeek = getCurrentWeek();
+
+  const lastCompletedWeek =
+    Math.max(1, currentWeek - 1);
+
+  const firstRecentWeek =
+    Math.max(1, lastCompletedWeek - 2);
+
+  const recentWeeks = [];
+
+  for (
+    let w = firstRecentWeek;
+    w <= lastCompletedWeek;
+    w++
+  ) {
+    recentWeeks.push(w);
+  }
+
+
+  // ==========================================================
+  // FETCH + JOIN FTN DATA
+  // ==========================================================
+
+  const seasonData =
+    fetchAdvancedCBCoverageData();
+
+  const recentData =
+    fetchAdvancedCBCoverageData(
+      recentWeeks
+    );
+
+
+  // ==========================================================
+  // OUTPUT
+  // ==========================================================
+
+  const output = [[
+
+    'CB',
+    'Team',
+
+    // SAMPLE
+    'Games',
+    'Routes',
+    'Targets',
+
+    // RESULTS
+    'Receptions',
+    'Yards',
+    'TD Allowed',
+    'Catch Rate',
+    'Yards / Target',
+
+    // ADVANCED
+    'EPA / Target',
+    'DVOA / Target',
+    'Success Rate Against',
+    'Lockdown Rate',
+
+    // COVERAGE QUALITY
+    'Tight Rate',
+    'Step Rate',
+    'Open Rate',
+    'Wide Open Rate',
+
+    // EXPOSURE
+    'Target Rate',
+
+    // MATCHUP DESCRIPTORS
+    'aDOT Against',
+    'Man Rate',
+    'Zone Rate',
+    'Single High',
+    '2 High',
+
+    // SEASON COMPONENTS
+    'Results Score',
+    'Quality Score',
+    'Efficiency Score',
+    'Exposure Score',
+    'Raw Season Weakness',
+    'Season Reliability',
+    'Adjusted Season',
+
+    // RECENT
+    'L3 Targets',
+    'L3 Yards',
+    'L3 TD',
+    'L3 Catch Rate',
+    'L3 YPT',
+    'L3 EPA / Target',
+    'L3 Open Rate',
+    'L3 Wide Open',
+    'Raw L3 Weakness',
+    'L3 Reliability',
+    'Adjusted L3',
+
+    // FINAL
+    'Trend',
+    'Final Coverage Weakness',
+    'Attack Level'
+
+  ]];
+
+
+  // ==========================================================
+  // PROCESS EACH CB
+  // ==========================================================
+
+  Object.keys(seasonData).forEach(id => {
+
+    const player =
+      seasonData[id];
+
+    const overview =
+      player.overview || {};
+
+    const analytics =
+      player.analytics || {};
+
+    const quality =
+      player['coverage-quality'] || {};
+
+    const air =
+      player['air-yards'] || {};
+
+    const types =
+      player['coverage-types'] || {};
+
+
+    const recent =
+      recentData[id] || null;
+
+
+    // ========================================================
+    // SEASON STATS
+    // ========================================================
+
+    const games =
+      ftnNum(
+        overview,
+        'nfl.coverage.games'
+      );
+
+    const routes =
+      ftnNum(
+        overview,
+        'nfl.coverage.routes_covered'
+      );
+
+    const targets =
+      ftnNum(
+        overview,
+        'nfl.coverage.targets_against'
+      );
+
+    const receptions =
+      ftnNum(
+        overview,
+        'nfl.coverage.receptions_against'
+      );
+
+    const yards =
+      ftnNum(
+        overview,
+        'nfl.coverage.receiving_yards_against'
+      );
+
+    const tds =
+      ftnNum(
+        overview,
+        'nfl.coverage.receiving_tds_against'
+      );
+
+    const catchRate =
+      ftnNum(
+        overview,
+        'nfl.coverage.catch_rate_against'
+      );
+
+    const targetRate =
+      ftnNum(
+        overview,
+        'nfl.coverage.target_rate_against'
+      );
+
+    const ypt =
+      targets
+        ? yards / targets
+        : 0;
+
+
+    // ========================================================
+    // ADVANCED SEASON DATA
+    // ========================================================
+
+    const epa =
+      ftnValue(
+        analytics,
+        'nfl.coverage.epa_target_against'
+      );
+
+    const dvoa =
+      ftnValue(
+        analytics,
+        'nfl.coverage.dvoa_target_against'
+      );
+
+    const successRate =
+      ftnValue(
+        analytics,
+        'nfl.coverage.success_rate_against'
+      );
+
+    const lockdownRate =
+      ftnValue(
+        analytics,
+        'nfl.coverage.coverage_lockdown_rate'
+      );
+
+
+    // ========================================================
+    // COVERAGE QUALITY
+    // ========================================================
+
+    const tightRate =
+      ftnValue(
+        quality,
+        'nfl.coverage.rate_tight_coverage'
+      );
+
+    const stepRate =
+      ftnValue(
+        quality,
+        'nfl.coverage.rate_step_coverage'
+      );
+
+    const openRate =
+      ftnValue(
+        quality,
+        'nfl.coverage.rate_open_coverage'
+      );
+
+    const wideOpenRate =
+      ftnValue(
+        quality,
+        'nfl.coverage.rate_wide_open_coverage'
+      );
+
+
+    // ========================================================
+    // MATCHUP DESCRIPTORS
+    // ========================================================
+
+    const adot =
+      ftnValue(
+        air,
+        'nfl.coverage.adot_against'
+      );
+
+    const manRate =
+      ftnValue(
+        types,
+        'nfl.coverage.rate_man_coverage'
+      );
+
+    const zoneRate =
+      ftnValue(
+        types,
+        'nfl.coverage.rate_zone_coverage'
+      );
+
+    const singleHigh =
+      ftnValue(
+        types,
+        'nfl.coverage.rate_single_high_coverage'
+      );
+
+    const twoHigh =
+      ftnValue(
+        types,
+        'nfl.coverage.rate_2_high_coverage'
+      );
+
+
+    // ========================================================
+    // SEASON WEAKNESS COMPONENTS
+    // ========================================================
+
+    const seasonScores =
+      calculateAdvancedCoverageWeakness({
+
+        targets,
+        yards,
+        tds,
+        catchRate,
+        targetRate,
+
+        epa,
+        dvoa,
+        successRate,
+        lockdownRate,
+
+        tightRate,
+        stepRate,
+        openRate,
+        wideOpenRate
+
+      });
+
+
+    const seasonReliability =
+      calculateCoverageReliability(
+        targets,
+        routes
+      );
+
+
+    const adjustedSeason =
+      adjustCoverageForReliability(
+        seasonScores.total,
+        seasonReliability
+      );
+
+
+    // ========================================================
+    // LAST 3
+    // ========================================================
+
+    let recentTargets = 0;
+    let recentRoutes = 0;
+    let recentYards = 0;
+    let recentTD = 0;
+    let recentCatchRate = 0;
+
+    let recentEPA = null;
+
+    let recentOpenRate = null;
+    let recentWideOpen = null;
+
+    let recentScores = {
+      total: 50
+    };
+
+    let recentReliability = 0;
+    let adjustedRecent = 50;
+
+
+    if (recent) {
+
+      const ro =
+        recent.overview || {};
+
+      const ra =
+        recent.analytics || {};
+
+      const rq =
+        recent['coverage-quality'] || {};
+
+
+      recentRoutes =
+        ftnNum(
+          ro,
+          'nfl.coverage.routes_covered'
+        );
+
+      recentTargets =
+        ftnNum(
+          ro,
+          'nfl.coverage.targets_against'
+        );
+
+      recentYards =
+        ftnNum(
+          ro,
+          'nfl.coverage.receiving_yards_against'
+        );
+
+      recentTD =
+        ftnNum(
+          ro,
+          'nfl.coverage.receiving_tds_against'
+        );
+
+      recentCatchRate =
+        ftnNum(
+          ro,
+          'nfl.coverage.catch_rate_against'
+        );
+
+      const recentTargetRate =
+        ftnNum(
+          ro,
+          'nfl.coverage.target_rate_against'
+        );
+
+
+      recentEPA =
+        ftnValue(
+          ra,
+          'nfl.coverage.epa_target_against'
+        );
+
+      const recentDVOA =
+        ftnValue(
+          ra,
+          'nfl.coverage.dvoa_target_against'
+        );
+
+      const recentSuccess =
+        ftnValue(
+          ra,
+          'nfl.coverage.success_rate_against'
+        );
+
+      const recentLockdown =
+        ftnValue(
+          ra,
+          'nfl.coverage.coverage_lockdown_rate'
+        );
+
+
+      const recentTight =
+        ftnValue(
+          rq,
+          'nfl.coverage.rate_tight_coverage'
+        );
+
+      const recentStep =
+        ftnValue(
+          rq,
+          'nfl.coverage.rate_step_coverage'
+        );
+
+      recentOpenRate =
+        ftnValue(
+          rq,
+          'nfl.coverage.rate_open_coverage'
+        );
+
+      recentWideOpen =
+        ftnValue(
+          rq,
+          'nfl.coverage.rate_wide_open_coverage'
+        );
+
+
+      recentScores =
+        calculateAdvancedCoverageWeakness({
+
+          targets:
+            recentTargets,
+
+          yards:
+            recentYards,
+
+          tds:
+            recentTD,
+
+          catchRate:
+            recentCatchRate,
+
+          targetRate:
+            recentTargetRate,
+
+          epa:
+            recentEPA,
+
+          dvoa:
+            recentDVOA,
+
+          successRate:
+            recentSuccess,
+
+          lockdownRate:
+            recentLockdown,
+
+          tightRate:
+            recentTight,
+
+          stepRate:
+            recentStep,
+
+          openRate:
+            recentOpenRate,
+
+          wideOpenRate:
+            recentWideOpen
+
+        });
+
+
+      recentReliability =
+        calculateCoverageReliability(
+          recentTargets,
+          recentRoutes
+        );
+
+
+      adjustedRecent =
+        adjustCoverageForReliability(
+          recentScores.total,
+          recentReliability
+        );
+    }
+
+
+    const recentYPT =
+      recentTargets
+        ? recentYards / recentTargets
+        : 0;
+
+
+    // ========================================================
+    // TREND
+    // ========================================================
+
+    const trendDifference =
+      adjustedRecent -
+      adjustedSeason;
+
+
+    let trend = '→ Stable';
+
+
+    if (trendDifference >= 8) {
+
+      trend =
+        '⬆ Getting Worse';
+
+    } else if (trendDifference <= -8) {
+
+      trend =
+        '⬇ Improving';
+    }
+
+
+    // ========================================================
+    // FINAL SCORE
+    // ========================================================
+
+    const finalRating =
+      Math.round(
+
+        adjustedSeason * 0.55 +
+
+        adjustedRecent * 0.45
+      );
+
+
+    let attackLevel;
+
+if (finalRating >= 70) {
+
+  attackLevel =
+    '🔥 Target';
+
+} else if (finalRating >= 63) {
+
+  attackLevel =
+    'Strong';
+
+} else if (finalRating >= 57) {
+
+  attackLevel =
+    'Favorable';
+
+} else if (finalRating >= 48) {
+
+  attackLevel =
+    'Neutral';
+
+} else {
+
+  attackLevel =
+    'Avoid';
+}
+
+
+    // ========================================================
+    // WRITE ROW
+    // ========================================================
+
+    output.push([
+
+      player.name,
+      player.team,
+
+      games,
+      routes,
+      targets,
+
+      receptions,
+      yards,
+      tds,
+      catchRate,
+      ypt,
+
+      nullableOutput(epa),
+      nullableOutput(dvoa),
+      nullableOutput(successRate),
+      nullableOutput(lockdownRate),
+
+      nullableOutput(tightRate),
+      nullableOutput(stepRate),
+      nullableOutput(openRate),
+      nullableOutput(wideOpenRate),
+
+      targetRate,
+
+      nullableOutput(adot),
+      nullableOutput(manRate),
+      nullableOutput(zoneRate),
+      nullableOutput(singleHigh),
+      nullableOutput(twoHigh),
+
+      seasonScores.results,
+      seasonScores.quality,
+      seasonScores.efficiency,
+      seasonScores.exposure,
+
+      seasonScores.total,
+      seasonReliability,
+      adjustedSeason,
+
+      recentTargets,
+      recentYards,
+      recentTD,
+      recentCatchRate,
+      recentYPT,
+
+      nullableOutput(recentEPA),
+      nullableOutput(recentOpenRate),
+      nullableOutput(recentWideOpen),
+
+      recentScores.total,
+      recentReliability,
+      adjustedRecent,
+
+      trend,
+      finalRating,
+      attackLevel
+
+    ]);
+  });
+
+
+  // ==========================================================
+  // SORT
+  // ==========================================================
+
+  const header =
+    output.shift();
+
+  // Final Coverage Weakness = column 44
+  output.sort(
+    (a, b) =>
+      Number(b[43]) -
+      Number(a[43])
+  );
+
+  output.unshift(header);
+
+
+  // ==========================================================
+  // CREATE / RESET SHEET
+  // ==========================================================
+
+  let sheet =
+    ss.getSheetByName(
+      NFL.SHEETS.CB_COVERAGE
+    );
+
+
+  if (!sheet) {
+
+    sheet =
+      ss.insertSheet(
+        NFL.SHEETS.CB_COVERAGE
+      );
+  }
+
+
+  sheet.clear();
+
+
+  // Important because old versions used different
+  // percentage columns.
+
+  sheet
+    .getRange(
+      1,
+      1,
+      sheet.getMaxRows(),
+      sheet.getMaxColumns()
+    )
+    .setNumberFormat('General');
+
+
+  ensureSize(
+    sheet,
+    output.length,
+    output[0].length
+  );
+
+
+  sheet
+    .getRange(
+      1,
+      1,
+      output.length,
+      output[0].length
+    )
+    .setValues(output);
+
+
+  // ==========================================================
+  // HEADER
+  // ==========================================================
+
+  sheet
+    .getRange(
+      1,
+      1,
+      1,
+      output[0].length
+    )
+    .setBackground('#0d293f')
+    .setFontColor('#ffffff')
+    .setFontWeight('bold')
+    .setWrap(true);
+
+
+  sheet.setFrozenRows(1);
+
+
+  // ==========================================================
+  // FORMATTING
+  // ==========================================================
+
+  formatAdvancedCBCoverage(
+    sheet,
+    output.length - 1
+  );
+
+
+  sheet.autoResizeColumns(
+    1,
+    output[0].length
+  );
+
+
+  sheet.setColumnWidth(1, 175);
+  sheet.setColumnWidth(2, 165);
+  sheet.setColumnWidth(43, 125);
+  sheet.setColumnWidth(45, 105);
+
+
+  sheet
+    .getRange('A1')
+    .setNote(
+      'Advanced FTN CB model. Last-3 completed weeks: ' +
+      recentWeeks.join(', ') +
+      '. Higher Coverage Weakness = more attractive defender to attack.'
+    );
+
+
+  ss.toast(
+    'Advanced CB coverage updated. Last 3: ' +
+    recentWeeks.join(', '),
+    'NFL TD Tracker',
+    5
+  );
+}
+
+
+/***************************************************************
+ * FETCH FTN COVERAGE
+ ***************************************************************/
+
+function fetchAdvancedCBCoverageData(
+  weeks
+) {
+
+  const tables = [
+
+    'overview',
+    'analytics',
+    'coverage-quality',
+    'air-yards',
+    'coverage-types'
+
+  ];
+
+
+  const players = {};
+
+
+  tables.forEach(table => {
+
+    let url =
+      'https://stats.ftnfantasy.com/api/v1/stats/categories/coverage/tables/' +
+      table +
+      '?season=2026' +
+      '&seasonType=REG';
+
+
+    if (
+      weeks &&
+      weeks.length
+    ) {
+
+      url +=
+        '&weeks=' +
+        encodeURIComponent(
+          weeks.join(',')
+        );
+    }
+
+
+    url +=
+      '&qualified=true' +
+      '&page=1' +
+      '&pageSize=500';
+
+
+    const response =
+      UrlFetchApp.fetch(
+        url,
+        {
+          method: 'get',
+
+          muteHttpExceptions:
+            true,
+
+          headers: {
+            'Accept':
+              'application/json'
+          }
+        }
+      );
+
+
+    const status =
+      response.getResponseCode();
+
+
+    if (status !== 200) {
+
+      throw new Error(
+        'FTN ' +
+        table +
+        ' request failed. HTTP ' +
+        status
+      );
+    }
+
+
+    const json =
+      JSON.parse(
+        response.getContentText()
+      );
+
+
+    const rows =
+      json.data &&
+      json.data.rows
+        ? json.data.rows
+        : [];
+
+
+    rows.forEach(row => {
+
+      if (
+        String(row.position)
+          .toUpperCase() !== 'CB'
+      ) {
+        return;
+      }
+
+
+      const id =
+        String(row.entityId);
+
+
+      if (!players[id]) {
+
+        players[id] = {
+
+          entityId:
+            row.entityId,
+
+          name:
+            row.entityName,
+
+          team:
+            row.team
+
+        };
+      }
+
+
+      players[id][table] =
+        row;
+    });
+  });
+
+
+  return players;
+}
+
+function calculateAdvancedCoverageWeakness(
+  data
+) {
+
+  // ==========================================================
+  // RESULTS — 35%
+  // ==========================================================
+
+  const ypt =
+    data.targets
+      ? data.yards / data.targets
+      : 0;
+
+
+  // 12 YPT is treated as extremely poor.
+  const yptScore =
+    clamp100(
+      ypt / 12 * 100
+    );
+
+
+  const catchScore =
+    clamp100(
+      (data.catchRate || 0) * 100
+    );
+
+
+  /*
+   * TD rate is better than raw TD count here.
+   *
+   * 15% TD/target is extremely poor.
+   */
+
+  const tdRate =
+    data.targets
+      ? data.tds / data.targets
+      : 0;
+
+
+  const tdScore =
+    clamp100(
+      tdRate / 0.15 * 100
+    );
+
+
+  const resultsScore =
+    Math.round(
+
+      yptScore * 0.40 +
+
+      catchScore * 0.30 +
+
+      tdScore * 0.30
+    );
+
+
+  // ==========================================================
+  // COVERAGE QUALITY — 25%
+  // ==========================================================
+
+  /*
+   * Open / wide-open are bad.
+   * Tight coverage is good.
+   *
+   * Step coverage is treated close to neutral.
+   */
+
+  const openScore =
+    data.openRate === null
+      ? 50
+      : clamp100(
+          data.openRate / 0.50 * 100
+        );
+
+
+  const wideOpenScore =
+    data.wideOpenRate === null
+      ? 50
+      : clamp100(
+          data.wideOpenRate / 0.25 * 100
+        );
+
+
+  const tightWeakness =
+    data.tightRate === null
+      ? 50
+      : clamp100(
+          100 -
+          (
+            data.tightRate /
+            0.60 *
+            100
+          )
+        );
+
+
+  const qualityScore =
+    Math.round(
+
+      openScore * 0.40 +
+
+      wideOpenScore * 0.35 +
+
+      tightWeakness * 0.25
+    );
+
+
+  // ==========================================================
+  // ADVANCED EFFICIENCY — 25%
+  // ==========================================================
+
+  /*
+   * These are centered around neutral performance.
+   *
+   * Positive EPA/DVOA/CPOE-type results against the defender
+   * increase vulnerability.
+   */
+
+
+  // -0.75 EPA = excellent
+  // +0.75 EPA = very poor
+
+  const epaScore =
+    data.epa === null
+      ? 50
+      : normalizeRange(
+          data.epa,
+          -0.75,
+          0.75
+        );
+
+
+  // -75% DVOA = excellent
+  // +75% DVOA = very poor
+
+  const dvoaScore =
+    data.dvoa === null
+      ? 50
+      : normalizeRange(
+          data.dvoa,
+          -0.75,
+          0.75
+        );
+
+
+  /*
+   * Higher offensive success rate against the CB
+   * means greater weakness.
+   */
+
+  const successScore =
+    data.successRate === null
+      ? 50
+      : clamp100(
+          data.successRate /
+          0.75 *
+          100
+        );
+
+
+  /*
+   * Lockdown rate works the opposite direction.
+   */
+
+  const lockdownWeakness =
+    data.lockdownRate === null
+      ? 50
+      : clamp100(
+          100 -
+          (
+            data.lockdownRate /
+            0.60 *
+            100
+          )
+        );
+
+
+  const efficiencyScore =
+    Math.round(
+
+      epaScore * 0.30 +
+
+      dvoaScore * 0.25 +
+
+      successScore * 0.25 +
+
+      lockdownWeakness * 0.20
+    );
+
+
+  // ==========================================================
+  // EXPOSURE — 15%
+  // ==========================================================
+
+  /*
+   * Defenders targeted on 25% of covered routes
+   * receive an exposure score of 100.
+   */
+
+  const exposureScore =
+    Math.round(
+      clamp100(
+        (data.targetRate || 0) /
+        0.25 *
+        100
+      )
+    );
+
+
+  // ==========================================================
+  // FINAL RAW SCORE
+  // ==========================================================
+
+  const total =
+    Math.round(
+
+      resultsScore * 0.35 +
+
+      qualityScore * 0.25 +
+
+      efficiencyScore * 0.25 +
+
+      exposureScore * 0.15
+    );
+
+
+  return {
+
+    results:
+      resultsScore,
+
+    quality:
+      qualityScore,
+
+    efficiency:
+      efficiencyScore,
+
+    exposure:
+      exposureScore,
+
+    total:
+      clamp100(total)
+
+  };
+}
+
+function ftnValue(
+  row,
+  field
+) {
+
+  if (
+    !row ||
+    row[field] === null ||
+    row[field] === undefined ||
+    row[field] === ''
+  ) {
+    return null;
+  }
+
+
+  const value =
+    Number(
+      row[field]
+    );
+
+
+  return Number.isFinite(value)
+    ? value
+    : null;
+}
+
+
+function nullableOutput(
+  value
+) {
+
+  return value === null ||
+         value === undefined
+    ? ''
+    : value;
+}
+
+
+function clamp100(
+  value
+) {
+
+  return Math.max(
+    0,
+    Math.min(
+      100,
+      value
+    )
+  );
+}
+
+
+function normalizeRange(
+  value,
+  min,
+  max
+) {
+
+  if (
+    value === null ||
+    value === undefined
+  ) {
+    return 50;
+  }
+
+
+  const normalized =
+    (
+      (value - min) /
+      (max - min)
+    ) * 100;
+
+
+  return clamp100(
+    normalized
+  );
+}
+
+function formatAdvancedCBCoverage(
+  sheet,
+  rows
+) {
+
+  if (!rows) {
+    return;
+  }
+
+
+  // ==========================================================
+  // PERCENTAGES
+  // ==========================================================
+
+  const percentageColumns = [
+
+    9,   // Catch Rate
+
+    12,  // DVOA
+    13,  // Success Rate
+    14,  // Lockdown
+
+    15,  // Tight
+    16,  // Step
+    17,  // Open
+    18,  // Wide Open
+
+    19,  // Target Rate
+
+    21,  // Man
+    22,  // Zone
+    23,  // Single High
+    24,  // 2 High
+
+    30,  // Season Reliability
+
+    35,  // L3 Catch Rate
+
+    41   // L3 Reliability
+  ];
+
+
+  percentageColumns.forEach(col => {
+
+    sheet
+      .getRange(
+        2,
+        col,
+        rows,
+        1
+      )
+      .setNumberFormat(
+        '0.0%'
+      );
+  });
+
+
+  // ==========================================================
+  // DECIMAL COLUMNS
+  // ==========================================================
+
+  const oneDecimalColumns = [
+
+    10,  // YPT
+    20,  // aDOT
+    36   // L3 YPT
+
+  ];
+
+
+  oneDecimalColumns.forEach(col => {
+
+    sheet
+      .getRange(
+        2,
+        col,
+        rows,
+        1
+      )
+      .setNumberFormat(
+        '0.0'
+      );
+  });
+
+
+  // EPA
+
+  sheet
+    .getRange(
+      2,
+      11,
+      rows,
+      1
+    )
+    .setNumberFormat(
+      '0.00'
+    );
+
+
+  sheet
+    .getRange(
+      2,
+      37,
+      rows,
+      1
+    )
+    .setNumberFormat(
+      '0.00'
+    );
+
+
+  // ==========================================================
+  // CONDITIONAL FORMATTING
+  // ==========================================================
+
+  const ratingRange =
+    sheet.getRange(
+      2,
+      44,
+      rows,
+      1
+    );
+
+
+  const rules = [];
+
+
+  rules.push(
+
+  SpreadsheetApp
+    .newConditionalFormatRule()
+    .whenNumberGreaterThanOrEqualTo(70)
+    .setBackground('#b6d7a8')
+    .setRanges([ratingRange])
+    .build()
+);
+
+
+rules.push(
+
+  SpreadsheetApp
+    .newConditionalFormatRule()
+    .whenNumberBetween(63, 69.999)
+    .setBackground('#d9ead3')
+    .setRanges([ratingRange])
+    .build()
+);
+
+
+rules.push(
+
+  SpreadsheetApp
+    .newConditionalFormatRule()
+    .whenNumberBetween(57, 62.999)
+    .setBackground('#fff2cc')
+    .setRanges([ratingRange])
+    .build()
+);
+
+
+rules.push(
+
+  SpreadsheetApp
+    .newConditionalFormatRule()
+    .whenNumberLessThan(48)
+    .setBackground('#f4cccc')
+    .setRanges([ratingRange])
+    .build()
+);
+
+
+  sheet.setConditionalFormatRules(
+    rules
+  );
+}
+
+
+
+/***************************************************************
+ * FTN NUMBER HELPER
+ ***************************************************************/
+
+function ftnNum(
+  row,
+  field
+) {
+
+  const value =
+    Number(
+      row[field]
+    );
+
+  return Number.isFinite(value)
+    ? value
+    : 0;
+}
+
+/***************************************************************
+ * CB VULNERABILITY
+ *
+ * 0 = excellent coverage
+ * 100 = highly vulnerable
+ ***************************************************************/
+
+/***************************************************************
+ * COVERAGE RELIABILITY
+ *
+ * Uses both targets and coverage routes.
+ *
+ * Rough interpretation:
+ *
+ *  5 targets  = low confidence
+ * 10 targets  = moderate
+ * 15 targets  = good
+ * 20+ targets = high
+ ***************************************************************/
+
+function calculateCoverageReliability(
+  targets,
+  routes
+) {
+
+  /*
+   * Targets are more informative for our
+   * specific purpose, so they receive 75%.
+   */
+
+  const targetReliability =
+    Math.min(
+      1,
+      targets / 20
+    );
+
+
+  /*
+   * 120 routes is treated as a mature sample.
+   */
+
+  const routeReliability =
+    Math.min(
+      1,
+      routes / 120
+    );
+
+
+  return (
+
+    targetReliability * 0.75 +
+
+    routeReliability * 0.25
+  );
+}
+
+/***************************************************************
+ * REGRESS SMALL SAMPLES TOWARD NEUTRAL
+ ***************************************************************/
+
+function adjustCoverageForReliability(
+  rawScore,
+  reliability
+) {
+
+  const neutral = 50;
+
+
+  return Math.round(
+
+    neutral * (1 - reliability) +
+
+    rawScore * reliability
+  );
+}
+
+/***************************************************************
+ * POSITION DEFENSE RANK
+ ***************************************************************/
+
+function getPositionRank(
+  team,
+  pos,
+  defenses
+) {
+
+  const list =
+    Object.entries(defenses)
+      .map(([name, d]) => {
+
+        let n = 0;
+
+        if (pos === 'WR')
+          n = d.wr;
+
+        if (pos === 'TE')
+          n = d.te;
+
+        if (pos === 'RB')
+          n =
+            d.rbRec +
+            d.rbRush;
+
+        if (pos === 'QB')
+          n = d.qbRush;
+
+        return {
+          team: name,
+          value: n
+        };
+      })
+      .sort(
+        (a, b) =>
+          b.value - a.value
+      );
+
+
+  const index =
+    list.findIndex(
+      x => x.team === team
+    );
+
+  return index >= 0 ?
+    index + 1 :
+    '';
+}
+
+
+/***************************************************************
+ * MATCHUP EXPLANATION
+ ***************************************************************/
+
+function buildAdvancedReason(
+  pos,
+  defense,
+  posAllowed,
+  last3Allowed,
+  seasonTD,
+  recentTD,
+  rzCarries,
+  goalLine,
+  rzTargets,
+  inside10,
+  rzShare,
+  recentRZ
+) {
+
+  const parts = [];
+
+
+  // Defensive matchup
+
+  if (posAllowed >= 4) {
+
+    parts.push(
+      defense +
+      ' allowed ' +
+      posAllowed +
+      ' ' +
+      pos +
+      ' TDs'
+    );
+  }
+
+
+  if (last3Allowed >= 6) {
+
+    parts.push(
+      last3Allowed +
+      ' TDs allowed last 3'
+    );
+  }
+
+
+  // Player production
+
+  if (seasonTD >= 4) {
+
+    parts.push(
+      seasonTD +
+      ' TDs this season'
+    );
+  }
+
+
+  if (recentTD >= 2) {
+
+    parts.push(
+      recentTD +
+      ' TDs last 3'
+    );
+  }
+
+
+  // RB / QB rushing opportunity
+
+  if (goalLine >= 3) {
+
+    parts.push(
+      goalLine +
+      ' carries inside 5'
+    );
+
+  } else if (rzCarries >= 5) {
+
+    parts.push(
+      rzCarries +
+      ' red-zone carries'
+    );
+  }
+
+
+  // WR / TE / RB receiving opportunity
+
+  if (inside10 >= 3) {
+
+    parts.push(
+      inside10 +
+      ' targets inside 10'
+    );
+
+  } else if (rzTargets >= 4) {
+
+    parts.push(
+      rzTargets +
+      ' red-zone targets'
+    );
+  }
+
+
+  // Recent scoring opportunities
+
+  if (recentRZ >= 5) {
+
+    parts.push(
+      recentRZ +
+      ' RZ opportunities last 3'
+    );
+  }
+
+
+  // Team share
+
+  if (rzShare >= 0.30) {
+
+    parts.push(
+      Math.round(
+        rzShare * 100
+      ) +
+      '% team RZ share'
+    );
+  }
+
+
+  if (!parts.length) {
+
+    parts.push(
+      'Above-average TD matchup'
+    );
+  }
+
+
+  return parts
+    .slice(0, 4)
+    .join(' • ');
+}
+
+/***************************************************************
+ * GAME DATE / TIME DISPLAY
+ ***************************************************************/
+
+function formatGameDateTime(dateValue, timeValue) {
+
+  if (!dateValue) return '';
+
+  const tz = 'America/New_York';
+
+  // Format game date
+  const date = new Date(dateValue);
+
+  if (isNaN(date.getTime())) {
+    return String(dateValue);
+  }
+
+  const dateText =
+    Utilities.formatDate(
+      date,
+      tz,
+      'EEE M/d'
+    );
+
+  // Format game time
+  let timeText = '';
+
+  if (timeValue instanceof Date) {
+
+    timeText =
+      Utilities.formatDate(
+        timeValue,
+        tz,
+        'h:mm a'
+      );
+
+  } else if (timeValue) {
+
+    const raw =
+      String(timeValue).trim();
+
+    /*
+     * Handles values such as:
+     * 16:25
+     * 16:25:00
+     * 4:25 PM
+     */
+
+    const match =
+      raw.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+
+    if (match) {
+
+      let hour = Number(match[1]);
+      const minute = match[2];
+
+      const ampm =
+        hour >= 12 ? 'PM' : 'AM';
+
+      hour = hour % 12;
+
+      if (hour === 0)
+        hour = 12;
+
+      timeText =
+        hour +
+        ':' +
+        minute +
+        ' ' +
+        ampm;
+
+    } else {
+
+      timeText = raw;
+    }
+  }
+
+  return timeText
+    ? dateText + ' • ' + timeText
+    : dateText;
+}
+
+/***************************************************************
+ * CURRENT WEEK
+ ***************************************************************/
+
+function getCurrentWeek() {
+
+  const ss =
+    SpreadsheetApp.getActive();
+
+  const settings =
+    ss.getSheetByName(
+      NFL.SHEETS.SETTINGS
+    );
+
+  /*
+   * Current Week lives in row 3
+   * in the Settings tab we built.
+   */
+
+  const manual =
+    num(
+      settings
+        .getRange('B3')
+        .getValue()
+    );
+
+  if (manual)
+    return manual;
+
+
+  /*
+   * fallback
+   */
+
+  const schedule =
+    ss.getSheetByName(
+      NFL.SHEETS.SCHEDULE
+    )
+      .getDataRange()
+      .getValues();
+
+  const h =
+    columnMap(schedule[0]);
+
+  const today =
+    new Date();
+
+  let closest = 1;
+  let distance = Infinity;
+
+
+  for (
+    let i = 1;
+    i < schedule.length;
+    i++
+  ) {
+
+    const d =
+      new Date(
+        schedule[i][h['Date']]
+      );
+
+    if (isNaN(d))
+      continue;
+
+    const diff =
+      Math.abs(
+        d.getTime() -
+        today.getTime()
+      );
+
+    if (diff < distance) {
+
+      distance = diff;
+
+      closest =
+        num(
+          schedule[i][h['Week']]
+        );
+    }
+  }
+
+  return closest;
+}
+
+
+/***************************************************************
+ * FORMATTING
+ ***************************************************************/
+
+function applyDefenseHeatmap(
+  sheet,
+  rows
+) {
+
+  if (!rows)
+    return;
+
+  const range =
+    sheet.getRange(
+      4,
+      4,
+      rows,
+      11
+    );
+
+  const rules =
+    sheet
+      .getConditionalFormatRules()
+      .filter(
+        r =>
+          !r.getRanges()
+            .some(
+              x =>
+                x.getSheet()
+                  .getName() ===
+                NFL.SHEETS.DEFENSE
+            )
+      );
+
+
+  rules.push(
+
+    SpreadsheetApp
+      .newConditionalFormatRule()
+      .setGradientMinpoint('#ffffff')
+      .setGradientMidpointWithValue(
+        '#fff2cc',
+        SpreadsheetApp.InterpolationType.PERCENTILE,
+        '50'
+      )
+      .setGradientMaxpoint('#b6d7a8')
+      .setRanges([range])
+      .build()
+
+  );
+
+
+  sheet
+    .setConditionalFormatRules(
+      rules
+    );
+}
+
+
+function applyTargetHeatmap(
+  sheet,
+  rows
+) {
+
+  if (!rows)
+    return;
+
+
+  const scoreRange =
+    sheet.getRange(
+      5,
+      13,
+      rows,
+      1
+    );
+
+
+  const rules =
+    sheet
+      .getConditionalFormatRules()
+      .filter(
+        r =>
+          !r.getRanges()
+            .some(
+              x =>
+                x.getSheet()
+                  .getName() ===
+                NFL.SHEETS.TARGETS
+            )
+      );
+
+
+  rules.push(
+
+    SpreadsheetApp
+      .newConditionalFormatRule()
+      .setGradientMinpoint('#f4cccc')
+      .setGradientMidpointWithValue(
+        '#fff2cc',
+        SpreadsheetApp.InterpolationType.NUMBER,
+        '70'
+      )
+      .setGradientMaxpoint('#93c47d')
+      .setRanges([scoreRange])
+      .build()
+
+  );
+
+
+  sheet
+    .setConditionalFormatRules(
+      rules
+    );
+}
+
+
+/***************************************************************
+ * DAILY AUTO REFRESH
+ ***************************************************************/
+
+function installDailyRefresh() {
+
+  /*
+   * Remove duplicate triggers first.
+   */
+
+  ScriptApp
+    .getProjectTriggers()
+    .forEach(t => {
+
+      if (
+        t.getHandlerFunction() ===
+        'refreshAllNFLData'
+      ) {
+        ScriptApp.deleteTrigger(t);
+      }
+    });
+
+
+  ScriptApp
+    .newTrigger(
+      'refreshAllNFLData'
+    )
+    .timeBased()
+    .everyDays(1)
+    .atHour(6)
+    .create();
+
+
+  SpreadsheetApp
+    .getUi()
+    .alert(
+      'Daily refresh installed.\n\nThe NFL data will refresh automatically each morning.'
+    );
+}
+
+
+/***************************************************************
+ * LAST REFRESH
+ ***************************************************************/
+
+function setLastRefresh() {
+
+  const sheet =
+    SpreadsheetApp
+      .getActive()
+      .getSheetByName(
+        NFL.SHEETS.SETTINGS
+      );
+
+  /*
+   * Add/update a refresh line.
+   */
+
+  const values =
+    sheet
+      .getRange(
+        1,
+        1,
+        sheet.getLastRow(),
+        1
+      )
+      .getValues()
+      .flat();
+
+
+  let row =
+    values.findIndex(
+      x =>
+        String(x)
+          .trim() ===
+        'Last Refresh'
+    ) + 1;
+
+
+  if (!row) {
+
+    row =
+      sheet.getLastRow() + 1;
+
+    sheet
+      .getRange(row, 1)
+      .setValue(
+        'Last Refresh'
+      );
+  }
+
+
+  sheet
+    .getRange(row, 2)
+    .setValue(
+      new Date()
+    )
+    .setNumberFormat(
+      'm/d/yyyy h:mm AM/PM'
+    );
+}
+
+
+/***************************************************************
+ * GENERIC HELPERS
+ ***************************************************************/
+
+function getAny(
+  row,
+  map,
+  names
+) {
+
+  for (
+    const name of names
+  ) {
+
+    if (
+      map[name] !== undefined &&
+      row[map[name]] !== '' &&
+      row[map[name]] !== null
+    ) {
+      return row[map[name]];
+    }
+  }
+
+  return '';
+}
+
+
+function writeTable(
+  sheetName,
+  data
+) {
+
+  const sheet =
+    SpreadsheetApp
+      .getActive()
+      .getSheetByName(
+        sheetName
+      );
+
+  if (!sheet)
+    throw new Error(
+      'Missing sheet: ' +
+      sheetName
+    );
+
+
+  sheet.clearContents();
+
+
+  if (!data.length)
+    return;
+
+
+  ensureSize(
+    sheet,
+    data.length,
+    data[0].length
+  );
+
+
+  sheet
+    .getRange(
+      1,
+      1,
+      data.length,
+      data[0].length
+    )
+    .setValues(data);
+
+
+  /*
+   * Header formatting
+   */
+
+  sheet
+    .getRange(
+      1,
+      1,
+      1,
+      data[0].length
+    )
+    .setBackground('#0d293f')
+    .setFontColor('#ffffff')
+    .setFontWeight('bold')
+    .setWrap(true);
+
+
+  sheet
+    .setFrozenRows(1);
+
+
+  sheet
+    .autoResizeColumns(
+      1,
+      data[0].length
+    );
+}
+
+
+function ensureSize(
+  sheet,
+  rows,
+  cols
+) {
+
+  if (
+    sheet.getMaxRows() < rows
+  ) {
+
+    sheet.insertRowsAfter(
+      sheet.getMaxRows(),
+      rows -
+      sheet.getMaxRows()
+    );
+  }
+
+
+  if (
+    sheet.getMaxColumns() < cols
+  ) {
+
+    sheet.insertColumnsAfter(
+      sheet.getMaxColumns(),
+      cols -
+      sheet.getMaxColumns()
+    );
+  }
+}
+
+/***************************************************************
+ * CURRENT NFL ROSTERS
+ *
+ * Returns current 2026 roster information indexed by GSIS ID.
+ * Used to:
+ *   - correct stale team assignments
+ *   - identify players no longer on an active roster
+ ***************************************************************/
+
+function getCurrentRosterMap() {
+
+  const roster =
+    fetchCSV(NFL.URLS.ROSTERS);
+
+  if (!roster || roster.length < 2) {
+
+    throw new Error(
+      'Current roster data could not be loaded.'
+    );
+  }
+
+  const h =
+    columnMap(roster[0]);
+
+  const map = {};
+
+
+  for (let i = 1; i < roster.length; i++) {
+
+    const r = roster[i];
+
+    const id =
+      getAny(r, h, [
+        'gsis_id',
+        'player_id'
+      ]);
+
+    if (!id)
+      continue;
+
+
+    const team =
+      getAny(r, h, [
+        'team',
+        'recent_team'
+      ]);
+
+
+    const position =
+      normalizePosition(
+        getAny(r, h, [
+          'position',
+          'position_group'
+        ])
+      );
+
+
+    const status =
+      String(
+        getAny(r, h, [
+          'status',
+          'roster_status'
+        ]) || ''
+      )
+      .trim()
+      .toUpperCase();
+
+
+    map[id] = {
+
+      team:
+        String(team || '')
+          .trim()
+          .toUpperCase(),
+
+      position,
+
+      status,
+
+      active:
+        isActiveRosterStatus(status)
+    };
+  }
+
+
+  return map;
+}
+
+function isActiveRosterStatus(status) {
+
+  status =
+    String(status || '')
+      .trim()
+      .toUpperCase();
+
+
+  /*
+   * nflverse roster statuses can vary.
+   *
+   * We want players who are currently available
+   * on the active roster.
+   */
+
+  const inactiveStatuses = [
+    'RES',
+    'RET',
+    'DEV',
+    'CUT',
+    'WAV',
+    'SUS',
+    'PUP',
+    'NFI',
+    'IR',
+    'EXE'
+  ];
+
+
+  if (!status)
+    return true;
+
+
+  return !inactiveStatuses.some(
+    s =>
+      status === s ||
+      status.startsWith(s + '-')
+  );
+}
+
+function ftnNullable(
+  row,
+  field
+) {
+
+  if (
+    !row ||
+    row[field] === null ||
+    row[field] === undefined ||
+    row[field] === ''
+  ) {
+    return '';
+  }
+
+  const value =
+    Number(
+      row[field]
+    );
+
+  return Number.isFinite(value)
+    ? value
+    : '';
+}
+
+
+function normalizeNFLTeam(team) {
+
+  if (
+    team === null ||
+    team === undefined ||
+    team === ''
+  ) {
+    return '';
+  }
+
+  const value =
+    String(team)
+      .trim()
+      .toUpperCase();
+
+
+  const teams = {
+
+    // Arizona
+    'ARI': 'ARI',
+    'ARIZONA': 'ARI',
+    'ARIZONA CARDINALS': 'ARI',
+
+    // Atlanta
+    'ATL': 'ATL',
+    'ATLANTA': 'ATL',
+    'ATLANTA FALCONS': 'ATL',
+
+    // Baltimore
+    'BAL': 'BAL',
+    'BALTIMORE': 'BAL',
+    'BALTIMORE RAVENS': 'BAL',
+
+    // Buffalo
+    'BUF': 'BUF',
+    'BUFFALO': 'BUF',
+    'BUFFALO BILLS': 'BUF',
+
+    // Carolina
+    'CAR': 'CAR',
+    'CAROLINA': 'CAR',
+    'CAROLINA PANTHERS': 'CAR',
+
+    // Chicago
+    'CHI': 'CHI',
+    'CHICAGO': 'CHI',
+    'CHICAGO BEARS': 'CHI',
+
+    // Cincinnati
+    'CIN': 'CIN',
+    'CINCINNATI': 'CIN',
+    'CINCINNATI BENGALS': 'CIN',
+
+    // Cleveland
+    'CLE': 'CLE',
+    'CLEVELAND': 'CLE',
+    'CLEVELAND BROWNS': 'CLE',
+
+    // Dallas
+    'DAL': 'DAL',
+    'DALLAS': 'DAL',
+    'DALLAS COWBOYS': 'DAL',
+
+    // Denver
+    'DEN': 'DEN',
+    'DENVER': 'DEN',
+    'DENVER BRONCOS': 'DEN',
+
+    // Detroit
+    'DET': 'DET',
+    'DETROIT': 'DET',
+    'DETROIT LIONS': 'DET',
+
+    // Green Bay
+    'GB': 'GB',
+    'GNB': 'GB',
+    'GREEN BAY': 'GB',
+    'GREEN BAY PACKERS': 'GB',
+
+    // Houston
+    'HOU': 'HOU',
+    'HOUSTON': 'HOU',
+    'HOUSTON TEXANS': 'HOU',
+
+    // Indianapolis
+    'IND': 'IND',
+    'INDIANAPOLIS': 'IND',
+    'INDIANAPOLIS COLTS': 'IND',
+
+    // Jacksonville
+    'JAX': 'JAX',
+    'JAC': 'JAX',
+    'JACKSONVILLE': 'JAX',
+    'JACKSONVILLE JAGUARS': 'JAX',
+
+    // Kansas City
+    'KC': 'KC',
+    'KAN': 'KC',
+    'KANSAS CITY': 'KC',
+    'KANSAS CITY CHIEFS': 'KC',
+
+    // Las Vegas
+    'LV': 'LV',
+    'LVR': 'LV',
+    'LAS VEGAS': 'LV',
+    'LAS VEGAS RAIDERS': 'LV',
+    'OAKLAND RAIDERS': 'LV',
+
+    // LA Chargers
+    'LAC': 'LAC',
+    'LOS ANGELES CHARGERS': 'LAC',
+    'LA CHARGERS': 'LAC',
+
+    // LA Rams
+    'LAR': 'LAR',
+    'LOS ANGELES RAMS': 'LAR',
+    'LA RAMS': 'LAR',
+
+    // Miami
+    'MIA': 'MIA',
+    'MIAMI': 'MIA',
+    'MIAMI DOLPHINS': 'MIA',
+
+    // Minnesota
+    'MIN': 'MIN',
+    'MINNESOTA': 'MIN',
+    'MINNESOTA VIKINGS': 'MIN',
+
+    // New England
+    'NE': 'NE',
+    'NWE': 'NE',
+    'NEW ENGLAND': 'NE',
+    'NEW ENGLAND PATRIOTS': 'NE',
+
+    // New Orleans
+    'NO': 'NO',
+    'NOR': 'NO',
+    'NEW ORLEANS': 'NO',
+    'NEW ORLEANS SAINTS': 'NO',
+
+    // NY Giants
+    'NYG': 'NYG',
+    'NEW YORK GIANTS': 'NYG',
+
+    // NY Jets
+    'NYJ': 'NYJ',
+    'NEW YORK JETS': 'NYJ',
+
+    // Philadelphia
+    'PHI': 'PHI',
+    'PHILADELPHIA': 'PHI',
+    'PHILADELPHIA EAGLES': 'PHI',
+
+    // Pittsburgh
+    'PIT': 'PIT',
+    'PITTSBURGH': 'PIT',
+    'PITTSBURGH STEELERS': 'PIT',
+
+    // San Francisco
+    'SF': 'SF',
+    'SFO': 'SF',
+    'SAN FRANCISCO': 'SF',
+    'SAN FRANCISCO 49ERS': 'SF',
+
+    // Seattle
+    'SEA': 'SEA',
+    'SEATTLE': 'SEA',
+    'SEATTLE SEAHAWKS': 'SEA',
+
+    // Tampa Bay
+    'TB': 'TB',
+    'TAM': 'TB',
+    'TAMPA BAY': 'TB',
+    'TAMPA BAY BUCCANEERS': 'TB',
+
+    // Tennessee
+    'TEN': 'TEN',
+    'TENNESSEE': 'TEN',
+    'TENNESSEE TITANS': 'TEN',
+
+    // Washington
+    'WAS': 'WAS',
+    'WSH': 'WAS',
+    'WASHINGTON': 'WAS',
+    'WASHINGTON COMMANDERS': 'WAS'
+  };
+
+
+  return teams[value] || value;
+}
+
+function buildWRUsage() {
+
+  const ss = SpreadsheetApp.getActive();
+
+  const tables = [
+    'usage',
+    'overview',
+    'efficiency',
+    'analytics',
+    'air-yards'
+  ];
+
+  const players = {};
+
+
+  // ==========================================================
+  // FETCH FTN RECEIVING TABLES
+  // ==========================================================
+
+  tables.forEach(table => {
+
+    const url =
+      'https://stats.ftnfantasy.com/api/v1/stats/categories/receiving/tables/' +
+      table +
+      '?season=2026' +
+      '&seasonType=REG' +
+      '&qualified=true' +
+      '&page=1' +
+      '&pageSize=500';
+
+
+    const response =
+      UrlFetchApp.fetch(
+        url,
+        {
+          method: 'get',
+          muteHttpExceptions: true,
+          headers: {
+            'Accept': 'application/json'
+          }
+        }
+      );
+
+
+    const status =
+      response.getResponseCode();
+
+
+    if (status !== 200) {
+
+      throw new Error(
+        'FTN receiving ' +
+        table +
+        ' failed. HTTP ' +
+        status
+      );
+    }
+
+
+    const json =
+      JSON.parse(
+        response.getContentText()
+      );
+
+
+    const rows =
+      json.data &&
+      json.data.rows
+        ? json.data.rows
+        : [];
+
+
+    rows.forEach(row => {
+
+      if (
+        String(row.position || '')
+          .toUpperCase() !== 'WR'
+      ) {
+        return;
+      }
+
+
+      const id =
+        String(row.entityId);
+
+
+      if (!players[id]) {
+
+        players[id] = {
+
+          entityId:
+            row.entityId,
+
+          name:
+            row.entityName,
+
+          team:
+            normalizeNFLTeam(
+              row.team
+            )
+
+        };
+      }
+
+
+      players[id][table] =
+        row;
+    });
+  });
+
+
+  // ==========================================================
+  // OUTPUT
+  // ==========================================================
+
+  const output = [[
+
+    'Rank',
+    'WR',
+    'Team',
+
+    'Games',
+    'Snaps',
+    'Snap Share',
+
+    'Targets',
+    'Targets / Game',
+    'Target Share',
+    'Target Rate',
+
+    'Routes',
+    'Route Participation',
+
+    'First Read Targets',
+    'First Read Rate',
+
+    'Receptions',
+    'Receiving Yards',
+    'Receiving TD',
+
+    'Yards / Target',
+    'Yards / Route Run',
+
+    'Air Yards',
+    'Air Yards Share',
+    'aDOT',
+    'WOPR',
+
+    'EPA / Route',
+    'EPA / Target',
+    'Separation Rate',
+
+    'Volume Score',
+    'Role Score',
+    'Efficiency Score',
+
+    'WR Usage Score',
+    'Usage Grade'
+
+  ]];
+
+
+  // ==========================================================
+  // BUILD WR DATA
+  // ==========================================================
+
+  Object.values(players)
+    .forEach(player => {
+
+      const usage =
+        player.usage || {};
+
+      const overview =
+        player.overview || {};
+
+      const efficiency =
+        player.efficiency || {};
+
+      const analytics =
+        player.analytics || {};
+
+      const air =
+        player['air-yards'] || {};
+
+
+      // ======================================================
+      // USAGE
+      // ======================================================
+
+      const games =
+        ftnNum(
+          usage,
+          'nfl.receiving.games'
+        );
+
+
+      const snaps =
+        ftnNum(
+          usage,
+          'nfl.receiving.snaps'
+        );
+
+
+      const snapShare =
+        ftnValue(
+          usage,
+          'nfl.receiving.snap_share'
+        );
+
+
+      const targets =
+        ftnNum(
+          usage,
+          'nfl.receiving.targets'
+        );
+
+
+      const targetsPerGame =
+        games
+          ? targets / games
+          : 0;
+
+
+      const targetShare =
+        ftnValue(
+          usage,
+          'nfl.receiving.target_share'
+        );
+
+
+      const targetRate =
+        ftnValue(
+          usage,
+          'nfl.receiving.target_rate'
+        );
+
+
+      const routes =
+        ftnNum(
+          usage,
+          'nfl.receiving.routes'
+        );
+
+
+      const routeParticipation =
+        ftnValue(
+          usage,
+          'nfl.receiving.route_participation'
+        );
+
+
+      const firstReadTargets =
+        ftnNum(
+          usage,
+          'nfl.receiving.first_read_targets'
+        );
+
+
+      const firstReadRate =
+        ftnValue(
+          usage,
+          'nfl.receiving.first_read_target_rate'
+        );
+
+
+      // ======================================================
+      // PRODUCTION
+      // ======================================================
+
+      const receptions =
+        ftnNum(
+          overview,
+          'nfl.receiving.receptions'
+        );
+
+
+      const yards =
+        ftnNum(
+          overview,
+          'nfl.receiving.yards'
+        );
+
+
+      const touchdowns =
+        ftnNum(
+          overview,
+          'nfl.receiving.touchdowns'
+        );
+
+
+      const yardsPerTarget =
+        ftnValue(
+          overview,
+          'nfl.receiving.yards_per_target'
+        );
+
+
+      const yprr =
+        ftnValue(
+          efficiency,
+          'nfl.receiving.yards_per_route_run'
+        );
+
+
+      // ======================================================
+      // AIR YARDS / ROLE
+      // ======================================================
+
+      const airYards =
+        ftnNum(
+          air,
+          'nfl.receiving.air_yards'
+        );
+
+
+      const airYardsShare =
+        ftnValue(
+          air,
+          'nfl.receiving.air_yards_share'
+        );
+
+
+      const adot =
+        ftnValue(
+          air,
+          'nfl.receiving.average_depth_of_target'
+        );
+
+
+      const wopr =
+        ftnValue(
+          air,
+          'nfl.receiving.wopr'
+        );
+
+
+      // ======================================================
+      // ANALYTICS
+      // ======================================================
+
+      const epaRoute =
+        ftnValue(
+          analytics,
+          'nfl.receiving.epa_route'
+        );
+
+
+      const epaTarget =
+        ftnValue(
+          analytics,
+          'nfl.receiving.epa_target'
+        );
+
+
+      const separation =
+        ftnValue(
+          analytics,
+          'nfl.receiving.separation_rate'
+        );
+
+
+      // ======================================================
+      // VOLUME SCORE
+      // ======================================================
+
+      /*
+       * 10 targets/game = elite
+       * 30% target share = elite
+       * 90% route participation = elite
+       * 80% first-read rate = elite
+       */
+
+      const targetVolumeScore =
+        clamp100(
+          targetsPerGame /
+          10 *
+          100
+        );
+
+
+      const targetShareScore =
+        targetShare === null
+          ? 50
+          : clamp100(
+              targetShare /
+              0.30 *
+              100
+            );
+
+
+      const routeScore =
+        routeParticipation === null
+          ? 50
+          : clamp100(
+              routeParticipation /
+              0.90 *
+              100
+            );
+
+
+      const firstReadScore =
+        firstReadRate === null
+          ? 50
+          : clamp100(
+              firstReadRate /
+              0.80 *
+              100
+            );
+
+
+      const volumeScore =
+        Math.round(
+
+          targetVolumeScore * 0.35 +
+
+          targetShareScore * 0.30 +
+
+          routeScore * 0.20 +
+
+          firstReadScore * 0.15
+        );
+
+
+      // ======================================================
+      // ROLE SCORE
+      // ======================================================
+
+      /*
+       * Air-yards share and WOPR tell us how important
+       * the receiver is to the passing offense.
+       *
+       * aDOT is NOT inherently good or bad, so we don't
+       * score it here. We'll use aDOT later for matchup fit.
+       */
+
+
+      const airShareScore =
+        airYardsShare === null
+          ? 50
+          : clamp100(
+              airYardsShare /
+              0.40 *
+              100
+            );
+
+
+      const woprScore =
+        wopr === null
+          ? 50
+          : clamp100(
+              wopr /
+              0.75 *
+              100
+            );
+
+
+      const roleScore =
+        Math.round(
+
+          airShareScore * 0.50 +
+
+          woprScore * 0.50
+        );
+
+
+      // ======================================================
+      // EFFICIENCY SCORE
+      // ======================================================
+
+      /*
+       * Efficiency gets less influence than opportunity.
+       * We don't want a few explosive catches to make a
+       * low-volume WR look like an elite TD candidate.
+       */
+
+
+      const yprrScore =
+        yprr === null
+          ? 50
+          : clamp100(
+              yprr /
+              3.0 *
+              100
+            );
+
+
+      const yptScore =
+        yardsPerTarget === null
+          ? 50
+          : clamp100(
+              yardsPerTarget /
+              12 *
+              100
+            );
+
+
+      const epaScore =
+        epaTarget === null
+          ? 50
+          : normalizeRange(
+              epaTarget,
+              -0.5,
+              1.0
+            );
+
+
+      const efficiencyScore =
+        Math.round(
+
+          yprrScore * 0.45 +
+
+          yptScore * 0.30 +
+
+          epaScore * 0.25
+        );
+
+
+      // ======================================================
+      // FINAL WR USAGE SCORE
+      // ======================================================
+
+      const usageScore =
+        Math.round(
+
+          volumeScore * 0.60 +
+
+          roleScore * 0.25 +
+
+          efficiencyScore * 0.15
+        );
+
+
+      let grade;
+
+
+      if (usageScore >= 85) {
+
+        grade =
+          '🔥 Elite';
+
+      } else if (usageScore >= 75) {
+
+        grade =
+          'High';
+
+      } else if (usageScore >= 65) {
+
+        grade =
+          'Strong';
+
+      } else if (usageScore >= 55) {
+
+        grade =
+          'Moderate';
+
+      } else {
+
+        grade =
+          'Low';
+      }
+
+
+      output.push([
+
+        '',
+
+        player.name,
+        player.team,
+
+        games,
+        snaps,
+        nullableOutput(
+          snapShare
+        ),
+
+        targets,
+        targetsPerGame,
+        nullableOutput(
+          targetShare
+        ),
+        nullableOutput(
+          targetRate
+        ),
+
+        routes,
+        nullableOutput(
+          routeParticipation
+        ),
+
+        firstReadTargets,
+        nullableOutput(
+          firstReadRate
+        ),
+
+        receptions,
+        yards,
+        touchdowns,
+
+        nullableOutput(
+          yardsPerTarget
+        ),
+
+        nullableOutput(
+          yprr
+        ),
+
+        airYards,
+
+        nullableOutput(
+          airYardsShare
+        ),
+
+        nullableOutput(
+          adot
+        ),
+
+        nullableOutput(
+          wopr
+        ),
+
+        nullableOutput(
+          epaRoute
+        ),
+
+        nullableOutput(
+          epaTarget
+        ),
+
+        nullableOutput(
+          separation
+        ),
+
+        volumeScore,
+        roleScore,
+        efficiencyScore,
+
+        usageScore,
+        grade
+      ]);
+    });
+
+
+  // ==========================================================
+  // SORT
+  // ==========================================================
+
+  const header =
+    output.shift();
+
+
+  output.sort(
+    (a, b) =>
+      Number(b[29]) -
+      Number(a[29])
+  );
+
+
+  output.forEach(
+    (row, index) => {
+
+      row[0] =
+        index + 1;
+    }
+  );
+
+
+  output.unshift(header);
+
+
+  // ==========================================================
+  // CREATE WR USAGE SHEET
+  // ==========================================================
+
+  let sheet =
+    ss.getSheetByName(
+      'WR Usage'
+    );
+
+
+  if (!sheet) {
+
+    sheet =
+      ss.insertSheet(
+        'WR Usage'
+      );
+  }
+
+
+  sheet.clear();
+
+
+  sheet
+    .getRange(
+      1,
+      1,
+      sheet.getMaxRows(),
+      sheet.getMaxColumns()
+    )
+    .setNumberFormat(
+      'General'
+    );
+
+
+  ensureSize(
+    sheet,
+    output.length,
+    output[0].length
+  );
+
+
+  sheet
+    .getRange(
+      1,
+      1,
+      output.length,
+      output[0].length
+    )
+    .setValues(
+      output
+    );
+
+
+  // ==========================================================
+  // FORMAT
+  // ==========================================================
+
+  sheet
+    .getRange(
+      1,
+      1,
+      1,
+      output[0].length
+    )
+    .setBackground(
+      '#0d293f'
+    )
+    .setFontColor(
+      '#ffffff'
+    )
+    .setFontWeight(
+      'bold'
+    )
+    .setWrap(
+      true
+    );
+
+
+  sheet.setFrozenRows(1);
+
+
+  if (output.length > 1) {
+
+    const rows =
+      output.length - 1;
+
+
+    // Percentage fields
+
+    const percentCols = [
+      6,   // Snap Share
+      9,   // Target Share
+      10,  // Target Rate
+      12,  // Route Participation
+      14,  // First Read Rate
+      21,  // Air Yards Share
+      26   // Separation Rate
+    ];
+
+
+    percentCols.forEach(col => {
+
+      sheet
+        .getRange(
+          2,
+          col,
+          rows,
+          1
+        )
+        .setNumberFormat(
+          '0.0%'
+        );
+    });
+
+
+    // Decimal fields
+
+    const decimalCols = [
+      8,   // Targets/Game
+      18,  // YPT
+      19,  // YPRR
+      22,  // aDOT
+      23   // WOPR
+    ];
+
+
+    decimalCols.forEach(col => {
+
+      sheet
+        .getRange(
+          2,
+          col,
+          rows,
+          1
+        )
+        .setNumberFormat(
+          '0.0'
+        );
+    });
+
+
+    // EPA
+
+    sheet
+      .getRange(
+        2,
+        24,
+        rows,
+        2
+      )
+      .setNumberFormat(
+        '0.00'
+      );
+
+
+    // Usage Score formatting
+
+    const scoreRange =
+      sheet.getRange(
+        2,
+        30,
+        rows,
+        1
+      );
+
+
+    const rules = [];
+
+
+    rules.push(
+
+      SpreadsheetApp
+        .newConditionalFormatRule()
+        .whenNumberGreaterThanOrEqualTo(85)
+        .setBackground('#b6d7a8')
+        .setRanges([scoreRange])
+        .build()
+    );
+
+
+    rules.push(
+
+      SpreadsheetApp
+        .newConditionalFormatRule()
+        .whenNumberBetween(
+          75,
+          84.999
+        )
+        .setBackground('#d9ead3')
+        .setRanges([scoreRange])
+        .build()
+    );
+
+
+    rules.push(
+
+      SpreadsheetApp
+        .newConditionalFormatRule()
+        .whenNumberBetween(
+          65,
+          74.999
+        )
+        .setBackground('#fff2cc')
+        .setRanges([scoreRange])
+        .build()
+    );
+
+
+    rules.push(
+
+      SpreadsheetApp
+        .newConditionalFormatRule()
+        .whenNumberLessThan(55)
+        .setBackground('#f4cccc')
+        .setRanges([scoreRange])
+        .build()
+    );
+
+
+    sheet.setConditionalFormatRules(
+      rules
+    );
+  }
+
+
+  sheet.autoResizeColumns(
+    1,
+    output[0].length
+  );
+
+
+  sheet.setColumnWidth(
+    2,
+    180
+  );
+
+
+  sheet.setColumnWidth(
+    3,
+    90
+  );
+
+
+  sheet
+    .getRange('A1')
+    .setNote(
+      'FTN WR Usage model. Usage Score emphasizes targets, target share, route participation and first-read usage. Air yards and efficiency supplement volume but do not overpower it.'
+    );
+
+
+  ss.toast(
+    'WR Usage database updated!',
+    'NFL TD Tracker',
+    5
+  );
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+function buildBestPlays() {
+
+  const ss = SpreadsheetApp.getActive();
+
+  const source =
+    ss.getSheetByName('WR Matchups');
+
+  if (!source) {
+    throw new Error(
+      'WR Matchups sheet not found.'
+    );
+  }
+
+  const data =
+    source.getDataRange().getValues();
+
+  if (data.length < 2) {
+    throw new Error(
+      'WR Matchups has no player data.'
+    );
+  }
+
+
+  // ==========================================================
+  // FIND COLUMNS BY HEADER NAME
+  // ==========================================================
+
+  const headers =
+    data[0].map(
+      h => String(h).trim()
+    );
+
+
+  function col(name) {
+
+    const index =
+      headers.indexOf(name);
+
+    if (index === -1) {
+      throw new Error(
+        'WR Matchups column not found: ' +
+        name
+      );
+    }
+
+    return index;
+  }
+
+
+  const C = {
+
+    player:
+      col('WR'),
+
+    team:
+      col('Team'),
+
+    opponent:
+      col('Opponent'),
+
+    location:
+      col('H/A'),
+
+    seasonTD:
+      col('Season TD'),
+
+    last3TD:
+      col('Last 3 TD'),
+
+    rzTargets:
+      col('RZ Targets'),
+
+    inside10:
+      col('Inside 10 Targets'),
+
+    tdRZ:
+      col('TD/RZ Opportunity Score'),
+
+    targetsGame:
+      col('Targets / Game'),
+
+    targetShare:
+      col('Target Share'),
+
+    routeParticipation:
+      col('Route Participation'),
+
+    yprr:
+      col('Yards / Route Run'),
+
+    airShare:
+      col('Air Yards Share'),
+
+    adot:
+      col('WR aDOT'),
+
+    wopr:
+      col('WOPR'),
+
+    usage:
+      col('FTN WR Usage Score'),
+
+    wrTDAllowed:
+      col('Opp WR TD Allowed'),
+
+    defenseTrend:
+      col('Defense Trend'),
+
+    secondary:
+      col('Secondary Rating'),
+
+    worstCB:
+      col('Worst CB'),
+
+    worstCBRating:
+      col('Worst CB Rating'),
+
+    defenseScore:
+      col('Defense WR Score'),
+
+    coverage:
+      col('Coverage Score'),
+
+    matchup:
+      col('WR Matchup Score')
+  };
+
+
+  // ==========================================================
+  // BUILD CANDIDATES
+  // ==========================================================
+
+  const candidates = [];
+
+
+  for (
+    let i = 1;
+    i < data.length;
+    i++
+  ) {
+
+    const row =
+      data[i];
+
+    const player =
+      row[C.player];
+
+    if (!player) {
+      continue;
+    }
+
+
+    const usage =
+      numOrZero(
+        row[C.usage]
+      );
+
+    const tdRZ =
+      numOrZero(
+        row[C.tdRZ]
+      );
+
+    const defense =
+      numOrZero(
+        row[C.defenseScore]
+      );
+
+    const coverage =
+      numOrZero(
+        row[C.coverage]
+      );
+
+    const matchup =
+      numOrZero(
+        row[C.matchup]
+      );
+
+    const targetShare =
+      numOrZero(
+        row[C.targetShare]
+      );
+
+    const targetsGame =
+      numOrZero(
+        row[C.targetsGame]
+      );
+
+    const inside10 =
+      numOrZero(
+        row[C.inside10]
+      );
+
+    const rzTargets =
+      numOrZero(
+        row[C.rzTargets]
+      );
+
+    const seasonTD =
+      numOrZero(
+        row[C.seasonTD]
+      );
+
+    const last3TD =
+      numOrZero(
+        row[C.last3TD]
+      );
+
+    const worstCBRating =
+      numOrZero(
+        row[C.worstCBRating]
+      );
+
+
+    // ========================================================
+    // DETERMINE PLAY TYPE
+    // ========================================================
+
+    const types = [];
+
+
+    // ========================================================
+    // BEST OVERALL
+    // ========================================================
+
+    /*
+     * Strong overall TD candidate.
+     *
+     * We still use the broader WR Matchup Score here,
+     * but require strong individual usage and either
+     * meaningful TD opportunity or an excellent opponent.
+     */
+
+    if (
+      matchup >= 70 &&
+      usage >= 75 &&
+      (
+        tdRZ >= 55 ||
+        defense >= 65
+      )
+    ) {
+
+      types.push({
+        name: '🔥 Best Overall',
+        priority: 5
+      });
+    }
+
+
+    // ========================================================
+    // RED-ZONE PLAY
+    // ========================================================
+
+    if (
+      tdRZ >= 60 &&
+      (
+        inside10 >= 3 ||
+        last3TD >= 2
+      )
+    ) {
+
+      types.push({
+        name: '🔴 Red-Zone Play',
+        priority: 4
+      });
+    }
+
+
+    // ========================================================
+    // VOLUME PLAY
+    // ========================================================
+
+    /*
+     * High volume alone is not enough for an anytime-TD play.
+     *
+     * Require at least some legitimate TD/RZ opportunity.
+     */
+
+    if (
+      usage >= 80 &&
+      tdRZ >= 25 &&
+      (
+        targetsGame >= 8 ||
+        targetShare >= 0.25
+      )
+    ) {
+
+      types.push({
+        name: '🎯 Volume Play',
+        priority: 3
+      });
+    }
+
+
+    // ========================================================
+    // MATCHUP PLAY
+    // ========================================================
+
+    /*
+     * A bad opposing defense cannot carry a receiver who has
+     * essentially no individual touchdown opportunity.
+     */
+
+    if (
+      defense >= 65 &&
+      usage >= 60 &&
+      tdRZ >= 20 &&
+      targetsGame >= 4 &&
+      (
+        coverage >= 55 ||
+        worstCBRating >= 65
+      )
+    ) {
+
+      types.push({
+        name: '⚡ Matchup Play',
+        priority: 2
+      });
+    }
+
+
+    // ========================================================
+    // SLEEPER
+    // ========================================================
+
+    /*
+     * Sleeper requires:
+     *
+     * - decent overall matchup
+     * - legitimate role
+     * - some TD opportunity
+     * - favorable defense/coverage signal
+     */
+
+    if (
+      matchup >= 54 &&
+      matchup < 70 &&
+      usage >= 60 &&
+      usage < 80 &&
+      tdRZ >= 20 &&
+      targetsGame >= 4 &&
+      (
+        defense >= 65 ||
+        coverage >= 60
+      )
+    ) {
+
+      types.push({
+        name: '💎 Sleeper',
+        priority: 1
+      });
+    }
+
+
+    // No qualifying signal = no Best Plays appearance
+
+    if (!types.length) {
+      continue;
+    }
+
+
+    types.sort(
+      (a, b) =>
+        b.priority -
+        a.priority
+    );
+
+
+    const playType =
+      types[0].name;
+
+
+    // ========================================================
+    // TD-SPECIFIC CONFIDENCE SCORE
+    // ========================================================
+
+    /*
+     * IMPORTANT:
+     *
+     * Confidence no longer starts with WR Matchup Score.
+     *
+     * That prevented double-counting because WR Matchup
+     * already contains Usage, TD/RZ, Defense and Coverage.
+     *
+     * New base:
+     *
+     * 35% WR Usage
+     * 35% TD / Red-Zone Opportunity
+     * 20% Defense vs WR
+     * 10% Coverage
+     *
+     * This makes individual TD opportunity equally important
+     * as overall receiving usage.
+     */
+
+    let confidence =
+      (
+        usage * 0.35
+      ) +
+      (
+        tdRZ * 0.35
+      ) +
+      (
+        defense * 0.20
+      ) +
+      (
+        coverage * 0.10
+      );
+
+
+    // ========================================================
+    // SMALL TD-SPECIFIC BONUSES
+    // ========================================================
+
+    /*
+     * Bonuses are intentionally small.
+     *
+     * They reward particularly strong touchdown indicators
+     * without allowing us to double-count the entire model.
+     */
+
+
+    // Heavy inside-10 involvement
+
+    if (inside10 >= 5) {
+
+      confidence += 5;
+
+    } else if (inside10 >= 3) {
+
+      confidence += 3;
+
+    } else if (inside10 >= 2) {
+
+      confidence += 1;
+    }
+
+
+    // Strong overall red-zone target volume
+
+    if (rzTargets >= 8) {
+
+      confidence += 3;
+
+    } else if (rzTargets >= 5) {
+
+      confidence += 2;
+    }
+
+
+    // Recent scoring form
+
+    if (last3TD >= 3) {
+
+      confidence += 3;
+
+    } else if (last3TD >= 2) {
+
+      confidence += 2;
+
+    } else if (last3TD >= 1) {
+
+      confidence += 1;
+    }
+
+
+    // Extremely strong target dominance
+
+    if (targetShare >= 0.30) {
+
+      confidence += 2;
+
+    } else if (targetShare >= 0.25) {
+
+      confidence += 1;
+    }
+
+
+    // Extremely heavy weekly target volume
+
+    if (targetsGame >= 10) {
+
+      confidence += 2;
+
+    } else if (targetsGame >= 8) {
+
+      confidence += 1;
+    }
+
+
+    // Cap score at 99
+
+    confidence =
+      Math.min(
+        99,
+        Math.round(confidence)
+      );
+
+
+    // ========================================================
+    // BUILD EXPLANATION
+    // ========================================================
+
+    const reasons = [];
+
+
+    // Usage
+
+    if (usage >= 90) {
+
+      reasons.push(
+        'elite WR usage'
+      );
+
+    } else if (usage >= 80) {
+
+      reasons.push(
+        'high WR usage'
+      );
+    }
+
+
+    // Volume
+
+    if (targetsGame >= 10) {
+
+      reasons.push(
+        targetsGame.toFixed(1) +
+        ' targets/game'
+      );
+
+    } else if (targetShare >= 0.25) {
+
+      reasons.push(
+        Math.round(
+          targetShare * 100
+        ) +
+        '% target share'
+      );
+    }
+
+
+    // TD/RZ opportunity
+
+    if (tdRZ >= 65) {
+
+      reasons.push(
+        'strong TD/red-zone opportunity'
+      );
+
+    } else if (tdRZ >= 50) {
+
+      reasons.push(
+        'positive TD/red-zone opportunity'
+      );
+    }
+
+
+    // Inside 10
+
+    if (inside10 >= 3) {
+
+      reasons.push(
+        inside10 +
+        ' inside-10 targets'
+      );
+    }
+
+
+    // Opponent
+
+    if (defense >= 80) {
+
+      reasons.push(
+        'elite opponent TD matchup'
+      );
+
+    } else if (defense >= 65) {
+
+      reasons.push(
+        'favorable opponent TD matchup'
+      );
+    }
+
+
+    // Coverage
+
+    if (coverage >= 65) {
+
+      reasons.push(
+        'attackable secondary'
+      );
+    }
+
+
+    // Weak CB
+
+    if (worstCBRating >= 65) {
+
+      const cbName =
+        row[C.worstCB] ||
+        'opposing CB';
+
+      reasons.push(
+        cbName +
+        ' grades as vulnerable'
+      );
+    }
+
+
+    // Defensive trend
+
+    if (
+      String(
+        row[C.defenseTrend] || ''
+      ).includes('Worse')
+    ) {
+
+      reasons.push(
+        'defense trending worse'
+      );
+    }
+
+
+    let keyReason =
+      reasons
+        .slice(0, 4)
+        .join('; ');
+
+
+    if (!keyReason) {
+
+      keyReason =
+        'Multiple positive touchdown indicators';
+    }
+
+
+    keyReason =
+      keyReason.charAt(0)
+        .toUpperCase() +
+      keyReason.slice(1) +
+      '.';
+
+
+    // ========================================================
+    // SAVE CANDIDATE
+    // ========================================================
+
+    candidates.push({
+
+      player:
+        player,
+
+      team:
+        row[C.team],
+
+      opponent:
+        row[C.opponent],
+
+      location:
+        row[C.location],
+
+      playType:
+        playType,
+
+      confidence:
+        confidence,
+
+      matchup:
+        matchup,
+
+      usage:
+        usage,
+
+      tdRZ:
+        tdRZ,
+
+      defense:
+        defense,
+
+      coverage:
+        coverage,
+
+      seasonTD:
+        seasonTD,
+
+      last3TD:
+        last3TD,
+
+      targetsGame:
+        targetsGame,
+
+      targetShare:
+        targetShare,
+
+      inside10:
+        inside10,
+
+      worstCB:
+        row[C.worstCB] || '',
+
+      worstCBRating:
+        worstCBRating,
+
+      reason:
+        keyReason
+    });
+  }
+
+
+  // ==========================================================
+  // SORT
+  // ==========================================================
+
+  candidates.sort(
+    (a, b) => {
+
+      if (
+        b.confidence !==
+        a.confidence
+      ) {
+
+        return (
+          b.confidence -
+          a.confidence
+        );
+      }
+
+
+      if (
+        b.tdRZ !==
+        a.tdRZ
+      ) {
+
+        return (
+          b.tdRZ -
+          a.tdRZ
+        );
+      }
+
+
+      return (
+        b.matchup -
+        a.matchup
+      );
+    }
+  );
+
+
+  // ==========================================================
+  // OUTPUT
+  // ==========================================================
+
+  const output = [[
+
+    'Rank',
+    'Player',
+    'Team',
+    'Opponent',
+    'H/A',
+
+    'Play Type',
+    'Confidence',
+
+    'Matchup Score',
+    'WR Usage',
+    'TD/RZ',
+    'Defense',
+    'Coverage',
+
+    'Season TD',
+    'Last 3 TD',
+
+    'Targets/Game',
+    'Target Share',
+    'Inside 10',
+
+    'Weakest CB',
+    'CB Weakness',
+
+    'Key Reason'
+  ]];
+
+
+  candidates.forEach(
+    (p, index) => {
+
+      output.push([
+
+        index + 1,
+
+        p.player,
+        p.team,
+        p.opponent,
+        p.location,
+
+        p.playType,
+        p.confidence,
+
+        p.matchup,
+        p.usage,
+        p.tdRZ,
+        p.defense,
+        p.coverage,
+
+        p.seasonTD,
+        p.last3TD,
+
+        p.targetsGame,
+        p.targetShare,
+        p.inside10,
+
+        p.worstCB,
+        p.worstCBRating,
+
+        p.reason
+      ]);
+    }
+  );
+
+
+  // ==========================================================
+  // CREATE SHEET
+  // ==========================================================
+
+  let sheet =
+    ss.getSheetByName(
+      'Best Plays'
+    );
+
+
+  if (!sheet) {
+
+    sheet =
+      ss.insertSheet(
+        'Best Plays'
+      );
+  }
+
+
+  sheet.clear();
+
+
+  ensureSize(
+    sheet,
+    output.length,
+    output[0].length
+  );
+
+
+  sheet
+    .getRange(
+      1,
+      1,
+      output.length,
+      output[0].length
+    )
+    .setValues(output);
+
+
+  // ==========================================================
+  // HEADER
+  // ==========================================================
+
+  sheet
+    .getRange(
+      1,
+      1,
+      1,
+      output[0].length
+    )
+    .setBackground('#0d293f')
+    .setFontColor('#ffffff')
+    .setFontWeight('bold')
+    .setWrap(true);
+
+
+  sheet.setFrozenRows(1);
+
+
+  // ==========================================================
+  // FORMATTING
+  // ==========================================================
+
+  if (output.length > 1) {
+
+    const rows =
+      output.length - 1;
+
+
+    // Targets/game
+
+    sheet
+      .getRange(
+        2,
+        15,
+        rows,
+        1
+      )
+      .setNumberFormat(
+        '0.0'
+      );
+
+
+    // Target share
+
+    sheet
+      .getRange(
+        2,
+        16,
+        rows,
+        1
+      )
+      .setNumberFormat(
+        '0.0%'
+      );
+
+
+    // Score columns
+
+    sheet
+      .getRange(
+        2,
+        7,
+        rows,
+        6
+      )
+      .setNumberFormat(
+        '0'
+      );
+
+
+    // CB weakness
+
+    sheet
+      .getRange(
+        2,
+        19,
+        rows,
+        1
+      )
+      .setNumberFormat(
+        '0'
+      );
+
+
+    const confidenceRange =
+      sheet.getRange(
+        2,
+        7,
+        rows,
+        1
+      );
+
+
+    const rules = [];
+
+
+    // Elite TD confidence
+
+    rules.push(
+
+      SpreadsheetApp
+        .newConditionalFormatRule()
+        .whenNumberGreaterThanOrEqualTo(80)
+        .setBackground('#b6d7a8')
+        .setRanges([
+          confidenceRange
+        ])
+        .build()
+    );
+
+
+    // Strong
+
+    rules.push(
+
+      SpreadsheetApp
+        .newConditionalFormatRule()
+        .whenNumberBetween(
+          70,
+          79.999
+        )
+        .setBackground('#d9ead3')
+        .setRanges([
+          confidenceRange
+        ])
+        .build()
+    );
+
+
+    // Favorable / Watch
+
+    rules.push(
+
+      SpreadsheetApp
+        .newConditionalFormatRule()
+        .whenNumberBetween(
+          60,
+          69.999
+        )
+        .setBackground('#fff2cc')
+        .setRanges([
+          confidenceRange
+        ])
+        .build()
+    );
+
+
+    sheet.setConditionalFormatRules(
+      rules
+    );
+  }
+
+
+  // ==========================================================
+  // WIDTHS
+  // ==========================================================
+
+  sheet.autoResizeColumns(
+    1,
+    output[0].length
+  );
+
+
+  sheet.setColumnWidth(
+    2,
+    180
+  );
+
+
+  sheet.setColumnWidth(
+    6,
+    150
+  );
+
+
+  sheet.setColumnWidth(
+    18,
+    170
+  );
+
+
+  sheet.setColumnWidth(
+    20,
+    500
+  );
+
+
+  sheet
+    .getRange('A1')
+    .setNote(
+      'Best Plays is an anytime-TD screening board. Confidence = 35% WR Usage + 35% TD/RZ Opportunity + 20% Defense vs WR + 10% Coverage, plus small TD-specific bonuses. Betting value will eventually compare this football signal with available sportsbook odds.'
+    );
+
+
+  ss.toast(
+    'TD-focused Best Plays board built!',
+    'NFL TD Tracker',
+    5
+  );
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+function buildGameBestPlays() {
+
+  const ss = SpreadsheetApp.getActive();
+
+  const bestSheet =
+    ss.getSheetByName('Best Plays');
+
+  const scheduleSheet =
+    ss.getSheetByName('Schedule');
+
+
+  if (!bestSheet || !scheduleSheet) {
+    throw new Error(
+      'Missing Best Plays or Schedule sheet.'
+    );
+  }
+
+
+  // ==========================================================
+  // SETTINGS
+  // ==========================================================
+
+  const MIN_CONFIDENCE = 60;
+  const MAX_PLAYS_PER_GAME = 3;
+
+
+  // ==========================================================
+  // READ BEST PLAYS
+  // ==========================================================
+
+  const bestData =
+    bestSheet
+      .getDataRange()
+      .getValues();
+
+
+  if (bestData.length < 2) {
+    throw new Error(
+      'Best Plays has no player data.'
+    );
+  }
+
+
+  const bestHeaders =
+    bestData[0].map(
+      h => String(h).trim()
+    );
+
+
+  function bestCol(name) {
+
+    const index =
+      bestHeaders.indexOf(name);
+
+    if (index === -1) {
+
+      throw new Error(
+        'Best Plays column not found: ' +
+        name
+      );
+    }
+
+    return index;
+  }
+
+
+  const B = {
+
+    player:
+      bestCol('Player'),
+
+    team:
+      bestCol('Team'),
+
+    opponent:
+      bestCol('Opponent'),
+
+    location:
+      bestCol('H/A'),
+
+    playType:
+      bestCol('Play Type'),
+
+    confidence:
+      bestCol('Confidence'),
+
+    matchup:
+      bestCol('Matchup Score'),
+
+    usage:
+      bestCol('WR Usage'),
+
+    tdRZ:
+      bestCol('TD/RZ'),
+
+    defense:
+      bestCol('Defense'),
+
+    coverage:
+      bestCol('Coverage'),
+
+    seasonTD:
+      bestCol('Season TD'),
+
+    last3TD:
+      bestCol('Last 3 TD'),
+
+    targetsGame:
+      bestCol('Targets/Game'),
+
+    targetShare:
+      bestCol('Target Share'),
+
+    inside10:
+      bestCol('Inside 10'),
+
+    weakestCB:
+      bestCol('Weakest CB'),
+
+    cbWeakness:
+      bestCol('CB Weakness'),
+
+    reason:
+      bestCol('Key Reason')
+  };
+
+
+  // ==========================================================
+  // READ SCHEDULE
+  // ==========================================================
+
+  const scheduleData =
+    scheduleSheet
+      .getDataRange()
+      .getValues();
+
+
+  if (scheduleData.length < 2) {
+    throw new Error(
+      'Schedule has no game data.'
+    );
+  }
+
+
+  const scheduleHeaders =
+    scheduleData[0].map(
+      h => String(h).trim()
+    );
+
+
+  function scheduleCol(name) {
+
+    const index =
+      scheduleHeaders.indexOf(name);
+
+    if (index === -1) {
+
+      throw new Error(
+        'Schedule column not found: ' +
+        name
+      );
+    }
+
+    return index;
+  }
+
+
+  const S = {
+
+    season:
+      scheduleCol('Season'),
+
+    week:
+      scheduleCol('Week'),
+
+    date:
+      scheduleCol('Date'),
+
+    time:
+      scheduleCol('Time ET'),
+
+    away:
+      scheduleCol('Away'),
+
+    home:
+      scheduleCol('Home'),
+
+    gameId:
+      scheduleCol('Game ID'),
+
+    status:
+      scheduleCol('Status')
+  };
+
+
+  // ==========================================================
+// FIND CURRENT NFL WEEK
+// ==========================================================
+
+const currentWeek =
+  getCurrentWeek();
+
+Logger.log(
+  'Game Best Plays building Week ' +
+  currentWeek
+);
+
+  // ==========================================================
+  // GET THIS WEEK'S GAMES
+  // ==========================================================
+
+  const games = [];
+
+
+  scheduleData
+    .slice(1)
+    .forEach(row => {
+
+      if (
+        Number(row[S.season]) !== 2026 ||
+        Number(row[S.week]) !== currentWeek
+      ) {
+        return;
+      }
+
+
+      const away =
+        String(
+          row[S.away] || ''
+        ).trim();
+
+      const home =
+        String(
+          row[S.home] || ''
+        ).trim();
+
+
+      if (!away || !home) {
+        return;
+      }
+
+
+      games.push({
+
+        week:
+          currentWeek,
+
+        date:
+          row[S.date],
+
+        time:
+          row[S.time],
+
+        away:
+          away,
+
+        home:
+          home,
+
+        game:
+          away + ' @ ' + home,
+
+        gameId:
+          row[S.gameId],
+
+        status:
+          row[S.status]
+      });
+    });
+
+
+  if (!games.length) {
+
+    throw new Error(
+      'No schedule games found for Week ' +
+      currentWeek +
+      '.'
+    );
+  }
+
+
+  // ==========================================================
+  // TEAM NORMALIZATION
+  // ==========================================================
+
+  /*
+   * Your Best Plays sheet currently uses abbreviations,
+   * so normalize both schedule and Best Plays teams.
+   */
+
+  function teamKey(team) {
+
+    const t =
+      String(team || '')
+        .trim()
+        .toUpperCase();
+
+
+    const map = {
+
+      'ARIZONA CARDINALS': 'ARI',
+      'ATLANTA FALCONS': 'ATL',
+      'BALTIMORE RAVENS': 'BAL',
+      'BUFFALO BILLS': 'BUF',
+      'CAROLINA PANTHERS': 'CAR',
+      'CHICAGO BEARS': 'CHI',
+      'CINCINNATI BENGALS': 'CIN',
+      'CLEVELAND BROWNS': 'CLE',
+      'DALLAS COWBOYS': 'DAL',
+      'DENVER BRONCOS': 'DEN',
+      'DETROIT LIONS': 'DET',
+      'GREEN BAY PACKERS': 'GB',
+      'HOUSTON TEXANS': 'HOU',
+      'INDIANAPOLIS COLTS': 'IND',
+      'JACKSONVILLE JAGUARS': 'JAX',
+      'KANSAS CITY CHIEFS': 'KC',
+      'LAS VEGAS RAIDERS': 'LV',
+      'LOS ANGELES CHARGERS': 'LAC',
+      'LOS ANGELES RAMS': 'LAR',
+      'MIAMI DOLPHINS': 'MIA',
+      'MINNESOTA VIKINGS': 'MIN',
+      'NEW ENGLAND PATRIOTS': 'NE',
+      'NEW ORLEANS SAINTS': 'NO',
+      'NEW YORK GIANTS': 'NYG',
+      'NEW YORK JETS': 'NYJ',
+      'PHILADELPHIA EAGLES': 'PHI',
+      'PITTSBURGH STEELERS': 'PIT',
+      'SAN FRANCISCO 49ERS': 'SF',
+      'SEATTLE SEAHAWKS': 'SEA',
+      'TAMPA BAY BUCCANEERS': 'TB',
+      'TENNESSEE TITANS': 'TEN',
+      'WASHINGTON COMMANDERS': 'WAS',
+
+      // Common abbreviation variations
+
+      'JAC': 'JAX',
+      'WSH': 'WAS',
+      'LA': 'LAR'
+    };
+
+
+    return map[t] || t;
+  }
+
+
+  // ==========================================================
+  // BUILD PLAYER OBJECTS
+  // ==========================================================
+
+  const players = [];
+
+
+  for (
+    let i = 1;
+    i < bestData.length;
+    i++
+  ) {
+
+    const row =
+      bestData[i];
+
+
+    const player =
+      String(
+        row[B.player] || ''
+      ).trim();
+
+
+    if (!player) {
+      continue;
+    }
+
+
+    const confidence =
+      Number(
+        row[B.confidence]
+      ) || 0;
+
+
+    if (
+      confidence <
+      MIN_CONFIDENCE
+    ) {
+      continue;
+    }
+
+
+    players.push({
+
+      player:
+        player,
+
+      team:
+        teamKey(
+          row[B.team]
+        ),
+
+      opponent:
+        teamKey(
+          row[B.opponent]
+        ),
+
+      location:
+        row[B.location],
+
+      playType:
+        row[B.playType],
+
+      confidence:
+        confidence,
+
+      matchup:
+        Number(
+          row[B.matchup]
+        ) || 0,
+
+      usage:
+        Number(
+          row[B.usage]
+        ) || 0,
+
+      tdRZ:
+        Number(
+          row[B.tdRZ]
+        ) || 0,
+
+      defense:
+        Number(
+          row[B.defense]
+        ) || 0,
+
+      coverage:
+        Number(
+          row[B.coverage]
+        ) || 0,
+
+      seasonTD:
+        Number(
+          row[B.seasonTD]
+        ) || 0,
+
+      last3TD:
+        Number(
+          row[B.last3TD]
+        ) || 0,
+
+      targetsGame:
+        Number(
+          row[B.targetsGame]
+        ) || 0,
+
+      targetShare:
+        Number(
+          row[B.targetShare]
+        ) || 0,
+
+      inside10:
+        Number(
+          row[B.inside10]
+        ) || 0,
+
+      weakestCB:
+        row[B.weakestCB] || '',
+
+      cbWeakness:
+        Number(
+          row[B.cbWeakness]
+        ) || 0,
+
+      reason:
+        row[B.reason] || ''
+    });
+  }
+
+
+  // ==========================================================
+  // MATCH PLAYERS TO GAMES
+  // ==========================================================
+
+  const gameResults = [];
+
+
+  games.forEach(game => {
+
+    const away =
+      teamKey(
+        game.away
+      );
+
+    const home =
+      teamKey(
+        game.home
+      );
+
+
+    const candidates =
+      players
+        .filter(p => {
+
+          return (
+
+            (
+              p.team === away &&
+              p.opponent === home
+            ) ||
+
+            (
+              p.team === home &&
+              p.opponent === away
+            )
+
+          );
+        })
+        .sort(
+          (a, b) => {
+
+            if (
+              b.confidence !==
+              a.confidence
+            ) {
+
+              return (
+                b.confidence -
+                a.confidence
+              );
+            }
+
+
+            if (
+              b.matchup !==
+              a.matchup
+            ) {
+
+              return (
+                b.matchup -
+                a.matchup
+              );
+            }
+
+
+            return (
+              b.usage -
+              a.usage
+            );
+          }
+        );
+
+
+    const selected =
+      candidates.slice(
+        0,
+        MAX_PLAYS_PER_GAME
+      );
+
+
+    gameResults.push({
+
+      game:
+        game,
+
+      away:
+        away,
+
+      home:
+        home,
+
+      plays:
+        selected
+    });
+  });
+
+
+  // ==========================================================
+  // OUTPUT
+  // ==========================================================
+
+  const output = [[
+
+    'Week',
+    'Game',
+    'Date',
+    'Time ET',
+
+    'Game Rank',
+
+    'Player',
+    'Team',
+    'Opponent',
+
+    'Play Type',
+    'Confidence',
+
+    'Matchup',
+    'Usage',
+    'TD/RZ',
+    'Defense',
+    'Coverage',
+
+    'Targets/Game',
+    'Target Share',
+    'Inside 10',
+
+    'Weakest CB',
+    'CB Weakness',
+
+    'Why We Like It'
+  ]];
+
+
+  gameResults.forEach(result => {
+
+    /*
+     * IMPORTANT:
+     *
+     * Games with no qualified plays still get one row.
+     * That lets us distinguish:
+     *
+     * "model found nothing"
+     *
+     * from
+     *
+     * "game accidentally disappeared."
+     */
+
+    if (!result.plays.length) {
+
+      output.push([
+
+        result.game.week,
+        result.away +
+          ' @ ' +
+          result.home,
+
+        result.game.date,
+        result.game.time,
+
+        '',
+
+        'No qualifying play',
+        '',
+        '',
+
+        '',
+        '',
+
+        '',
+        '',
+        '',
+        '',
+        '',
+
+        '',
+        '',
+        '',
+
+        '',
+        '',
+
+        'No WR currently meets the model threshold.'
+
+      ]);
+
+      return;
+    }
+
+
+    result.plays.forEach(
+      (p, index) => {
+
+        output.push([
+
+          result.game.week,
+
+          result.away +
+            ' @ ' +
+            result.home,
+
+          result.game.date,
+          result.game.time,
+
+          index + 1,
+
+          p.player,
+          p.team,
+          p.opponent,
+
+          p.playType,
+          p.confidence,
+
+          p.matchup,
+          p.usage,
+          p.tdRZ,
+          p.defense,
+          p.coverage,
+
+          p.targetsGame,
+          p.targetShare,
+          p.inside10,
+
+          p.weakestCB,
+          p.cbWeakness,
+
+          p.reason
+        ]);
+      }
+    );
+  });
+
+
+  // ==========================================================
+  // CREATE / CLEAR SHEET
+  // ==========================================================
+
+  let sheet =
+    ss.getSheetByName(
+      'Game Best Plays'
+    );
+
+
+  if (!sheet) {
+
+    sheet =
+      ss.insertSheet(
+        'Game Best Plays'
+      );
+  }
+
+
+  sheet.clear();
+
+
+  /*
+   * Make sure the sheet is large enough.
+   *
+   * This avoids depending on another helper function.
+   */
+
+  const neededRows =
+    output.length;
+
+  const neededCols =
+    output[0].length;
+
+
+  if (
+    sheet.getMaxRows() <
+    neededRows
+  ) {
+
+    sheet.insertRowsAfter(
+      sheet.getMaxRows(),
+      neededRows -
+        sheet.getMaxRows()
+    );
+  }
+
+
+  if (
+    sheet.getMaxColumns() <
+    neededCols
+  ) {
+
+    sheet.insertColumnsAfter(
+      sheet.getMaxColumns(),
+      neededCols -
+        sheet.getMaxColumns()
+    );
+  }
+
+
+  sheet
+    .getRange(
+      1,
+      1,
+      output.length,
+      output[0].length
+    )
+    .setValues(output);
+
+
+  // ==========================================================
+  // HEADER FORMAT
+  // ==========================================================
+
+  sheet
+    .getRange(
+      1,
+      1,
+      1,
+      output[0].length
+    )
+    .setBackground(
+      '#0d293f'
+    )
+    .setFontColor(
+      '#ffffff'
+    )
+    .setFontWeight(
+      'bold'
+    )
+    .setWrap(
+      true
+    );
+
+
+  sheet.setFrozenRows(1);
+
+
+  // ==========================================================
+  // NUMBER FORMATTING
+  // ==========================================================
+
+  // Format Date and Time columns
+if (output.length > 1) {
+
+  sheet
+    .getRange(
+      2,
+      3,
+      output.length - 1,
+      1
+    )
+    .setNumberFormat('m/d/yyyy');
+
+  sheet
+    .getRange(
+      2,
+      4,
+      output.length - 1,
+      1
+    )
+    .setNumberFormat('h:mm AM/PM');
+}
+
+
+  if (output.length > 1) {
+
+    const rows =
+      output.length - 1;
+
+
+    // Confidence through Coverage
+
+    sheet
+      .getRange(
+        2,
+        10,
+        rows,
+        6
+      )
+      .setNumberFormat(
+        '0'
+      );
+
+
+    // Targets/Game
+
+    sheet
+      .getRange(
+        2,
+        16,
+        rows,
+        1
+      )
+      .setNumberFormat(
+        '0.0'
+      );
+
+
+    // Target Share
+
+    sheet
+      .getRange(
+        2,
+        17,
+        rows,
+        1
+      )
+      .setNumberFormat(
+        '0.0%'
+      );
+
+
+    // Inside 10
+
+    sheet
+      .getRange(
+        2,
+        18,
+        rows,
+        1
+      )
+      .setNumberFormat(
+        '0'
+      );
+
+
+    // CB weakness
+
+    sheet
+      .getRange(
+        2,
+        20,
+        rows,
+        1
+      )
+      .setNumberFormat(
+        '0'
+      );
+  }
+
+
+  // ==========================================================
+  // CONDITIONAL FORMATTING
+  // ==========================================================
+
+  if (output.length > 1) {
+
+    const rows =
+      output.length - 1;
+
+
+    const confidenceRange =
+      sheet.getRange(
+        2,
+        10,
+        rows,
+        1
+      );
+
+
+    const rules = [];
+
+
+    // Elite
+
+    rules.push(
+
+      SpreadsheetApp
+        .newConditionalFormatRule()
+        .whenNumberGreaterThanOrEqualTo(
+          85
+        )
+        .setBackground(
+          '#b6d7a8'
+        )
+        .setRanges([
+          confidenceRange
+        ])
+        .build()
+
+    );
+
+
+    // Strong
+
+    rules.push(
+
+      SpreadsheetApp
+        .newConditionalFormatRule()
+        .whenNumberBetween(
+          75,
+          84.999
+        )
+        .setBackground(
+          '#d9ead3'
+        )
+        .setRanges([
+          confidenceRange
+        ])
+        .build()
+
+    );
+
+
+    // Watch
+
+    rules.push(
+
+      SpreadsheetApp
+        .newConditionalFormatRule()
+        .whenNumberBetween(
+          65,
+          74.999
+        )
+        .setBackground(
+          '#fff2cc'
+        )
+        .setRanges([
+          confidenceRange
+        ])
+        .build()
+
+    );
+
+
+    sheet.setConditionalFormatRules(
+      rules
+    );
+  }
+
+
+  // ==========================================================
+  // VISUAL SEPARATION BETWEEN GAMES
+  // ==========================================================
+
+  if (output.length > 2) {
+
+    let previousGame = '';
+
+
+    for (
+      let r = 2;
+      r <= output.length;
+      r++
+    ) {
+
+      const game =
+        String(
+          sheet
+            .getRange(
+              r,
+              2
+            )
+            .getValue()
+        );
+
+
+      if (
+        previousGame &&
+        game !== previousGame
+      ) {
+
+        sheet
+          .getRange(
+            r,
+            1,
+            1,
+            output[0].length
+          )
+          .setBorder(
+            true,
+            null,
+            null,
+            null,
+            null,
+            null,
+            '#666666',
+            SpreadsheetApp.BorderStyle.SOLID_MEDIUM
+          );
+      }
+
+
+      previousGame =
+        game;
+    }
+  }
+
+
+  // ==========================================================
+  // COLUMN WIDTHS
+  // ==========================================================
+
+  sheet.autoResizeColumns(
+    1,
+    output[0].length
+  );
+
+
+  sheet.setColumnWidth(
+    2,
+    120
+  );
+
+
+  sheet.setColumnWidth(
+    6,
+    180
+  );
+
+
+  sheet.setColumnWidth(
+    9,
+    150
+  );
+
+
+  sheet.setColumnWidth(
+    19,
+    170
+  );
+
+
+  sheet.setColumnWidth(
+    21,
+    500
+  );
+
+
+  // Wrap explanation column
+
+  if (output.length > 1) {
+
+    sheet
+      .getRange(
+        2,
+        21,
+        output.length - 1,
+        1
+      )
+      .setWrap(true);
+  }
+
+
+  // ==========================================================
+  // FILTER
+  // ==========================================================
+
+  const existingFilter =
+    sheet.getFilter();
+
+
+  if (existingFilter) {
+    existingFilter.remove();
+  }
+
+
+  sheet
+    .getRange(
+      1,
+      1,
+      output.length,
+      output[0].length
+    )
+    .createFilter();
+
+
+  // ==========================================================
+  // NOTE
+  // ==========================================================
+
+  sheet
+    .getRange('A1')
+    .setNote(
+      'Game Best Plays shows up to 3 qualifying WR touchdown candidates per game. Players must first qualify for Best Plays and have Confidence >= ' +
+      MIN_CONFIDENCE +
+      '. Games with no qualifying candidate remain visible.'
+    );
+
+
+  ss.toast(
+    'Week ' +
+      currentWeek +
+      ' Game Best Plays built!',
+    'NFL TD Tracker',
+    6
+  );
+}
+
+// ==========================================================
+// SUPABASE NFL RESEARCH SYNC
+// ==========================================================
+
+function syncNFLResearchToSupabase() {
+
+  const ss = SpreadsheetApp.getActive();
+
+  ss.toast(
+    'Syncing NFL research to Bet Tracker...',
+    'Supabase Sync',
+    5
+  );
+
+  try {
+
+    const season = 2026;
+
+// Use the week actually displayed on Game Best Plays.
+// This keeps Supabase aligned with the betting slate
+// rather than the last completed stats week.
+
+const gameSheet =
+  ss.getSheetByName(
+    'Game Best Plays'
+  );
+
+if (!gameSheet) {
+  throw new Error(
+    'Game Best Plays sheet not found.'
+  );
+}
+
+const week =
+  Number(
+    gameSheet.getRange('A2').getValue()
+  );
+
+if (!week) {
+  throw new Error(
+    'Could not determine the betting week from Game Best Plays.'
+  );
+}
+    // ------------------------------------------------------
+    // 1. DEFENSE TARGETS
+    // ------------------------------------------------------
+
+    ss.toast(
+      'Syncing defenses to target...',
+      'Supabase Sync',
+      5
+    );
+
+    const defenseRows =
+      buildDefenseTargetSyncRows_(
+        season,
+        week
+      );
+
+    sendNFLResearchToSupabase_(
+      'defense_targets',
+      defenseRows
+    );
+
+
+    // ------------------------------------------------------
+    // 2. WR MATCHUPS
+    // ------------------------------------------------------
+
+    ss.toast(
+      'Syncing WR matchups...',
+      'Supabase Sync',
+      5
+    );
+
+    const matchupRows =
+      buildWRMatchupSyncRows_(
+        season,
+        week
+      );
+
+    sendNFLResearchToSupabase_(
+      'wr_matchups',
+      matchupRows
+    );
+
+
+    // ------------------------------------------------------
+    // 3. BEST PLAYS
+    // ------------------------------------------------------
+
+    ss.toast(
+      'Syncing Best Plays...',
+      'Supabase Sync',
+      5
+    );
+
+    const bestPlayRows =
+      buildBestPlaySyncRows_(
+        season,
+        week
+      );
+
+    sendNFLResearchToSupabase_(
+      'best_plays',
+      bestPlayRows
+    );
+
+
+    // ------------------------------------------------------
+    // 4. GAME BEST PLAYS
+    // ------------------------------------------------------
+
+    ss.toast(
+      'Syncing Game Best Plays...',
+      'Supabase Sync',
+      5
+    );
+
+    const gameRows =
+      buildGameBestPlaySyncRows_(
+        season,
+        week
+      );
+
+    sendNFLResearchToSupabase_(
+      'game_best_plays',
+      gameRows
+    );
+
+
+    ss.toast(
+      'NFL research synced to Bet Tracker!',
+      'Complete',
+      8
+    );
+
+    console.log(
+      'NFL Research Sync Complete'
+    );
+
+    console.log(
+      'Defense targets: ' +
+      defenseRows.length
+    );
+
+    console.log(
+      'WR matchups: ' +
+      matchupRows.length
+    );
+
+    console.log(
+      'Best plays: ' +
+      bestPlayRows.length
+    );
+
+    console.log(
+      'Game best plays: ' +
+      gameRows.length
+    );
+
+    } catch (err) {
+
+    console.error(err);
+
+    const message =
+      String(
+        err.message || err
+      );
+
+    ss.toast(
+      message,
+      'NFL Research Sync Error',
+      10
+    );
+
+    throw err;
+  }
+}
+
+
+// ==========================================================
+// SEND DATA TO SUPABASE EDGE FUNCTION
+// ==========================================================
+
+function sendNFLResearchToSupabase_(
+  dataset,
+  rows
+) {
+
+  if (!rows || !rows.length) {
+
+    console.log(
+      dataset +
+      ': no rows to sync.'
+    );
+
+    return;
+  }
+
+
+  const props =
+    PropertiesService
+      .getScriptProperties();
+
+
+  const supabaseUrl =
+    props.getProperty(
+      'SUPABASE_URL'
+    );
+
+
+  const anonKey =
+    props.getProperty(
+      'SUPABASE_ANON_KEY'
+    );
+
+
+  if (!supabaseUrl) {
+
+    throw new Error(
+      'SUPABASE_URL is missing from Script Properties.'
+    );
+  }
+
+
+  if (!anonKey) {
+
+    throw new Error(
+      'SUPABASE_ANON_KEY is missing from Script Properties.'
+    );
+  }
+
+
+  const url =
+    supabaseUrl +
+    '/functions/v1/atd-nfl-research-sync';
+
+
+  const payload = {
+
+    dataset:
+      dataset,
+
+    rows:
+      rows
+  };
+
+
+  const response =
+    UrlFetchApp.fetch(
+      url,
+      {
+        method: 'post',
+
+        contentType:
+          'application/json',
+
+        headers: {
+
+          'apikey':
+            anonKey,
+
+          'Authorization':
+            'Bearer ' +
+            anonKey
+        },
+
+        payload:
+          JSON.stringify(
+            payload
+          ),
+
+        muteHttpExceptions:
+          true
+      }
+    );
+
+
+  const status =
+    response.getResponseCode();
+
+
+  const text =
+    response.getContentText();
+
+
+  console.log(
+    dataset +
+    ' HTTP ' +
+    status
+  );
+
+
+  console.log(text);
+
+
+  if (
+    status < 200 ||
+    status >= 300
+  ) {
+
+    throw new Error(
+      'Supabase sync failed for ' +
+      dataset +
+      '. HTTP ' +
+      status +
+      ': ' +
+      text
+    );
+  }
+}
+
+
+// ==========================================================
+// DEFENSE TARGETS
+// ==========================================================
+
+function buildDefenseTargetSyncRows_(
+  season,
+  week
+) {
+
+  const ss =
+    SpreadsheetApp.getActive();
+
+
+  const sheet =
+    ss.getSheetByName(
+      'Defense Rankings'
+    );
+
+
+  if (!sheet) {
+
+    throw new Error(
+      'Defense Rankings sheet not found.'
+    );
+  }
+
+
+  const data =
+    sheet
+      .getDataRange()
+      .getValues();
+
+
+  if (data.length < 2) {
+    return [];
+  }
+
+
+  // ==========================================================
+// FIND ACTUAL HEADER ROW
+// ==========================================================
+
+let headerRowIndex = -1;
+
+for (let r = 0; r < Math.min(data.length, 15); r++) {
+
+  const testHeaders =
+    data[r].map(
+      h => String(h).trim()
+    );
+
+  const hasGames =
+    testHeaders.includes('Games');
+
+  const hasTotalTD =
+    testHeaders.includes('Total TD');
+
+  const hasWR =
+    testHeaders.includes('WR Rec TD');
+
+  if (
+    hasGames &&
+    hasTotalTD &&
+    hasWR
+  ) {
+
+    headerRowIndex = r;
+    break;
+  }
+}
+
+
+if (headerRowIndex === -1) {
+
+  throw new Error(
+    'Could not locate the Defense Rankings header row.'
+  );
+}
+
+
+const headers =
+  data[headerRowIndex].map(
+    h => String(h).trim()
+  );
+
+
+console.log(
+  'Defense Rankings header row: ' +
+  (headerRowIndex + 1)
+);
+
+console.log(
+  'Defense Rankings headers: ' +
+  headers.join(' | ')
+);
+
+
+ function col(...names) {
+
+  for (const name of names) {
+
+    const i =
+      headers.indexOf(name);
+
+    if (i !== -1) {
+      return i;
+    }
+  }
+
+  throw new Error(
+    'Defense Rankings column not found. Tried: ' +
+    names.join(', ') +
+    '\n\nActual headers: ' +
+    headers.join(' | ')
+  );
+}
+
+  const C = {
+
+    defense:
+  col(
+    'Defense',
+    'Team',
+    'Def Team',
+    'Defensive Team'
+  ),
+
+    games:
+      col('Games'),
+
+    totalTD:
+      col('Total TD'),
+
+    tdGame:
+      col('TD/Game'),
+
+    wr:
+      col('WR Rec TD'),
+
+    te:
+      col('TE Rec TD'),
+
+    rbRec:
+      col('RB Rec TD'),
+
+    rbRush:
+      col('RB Rush TD'),
+
+    qbRush:
+      col('QB Rush TD'),
+
+    last3:
+      col('Last 3 TD'),
+
+    last3Game:
+      col('Last 3 / Game'),
+
+    bestAttack:
+      col('Best Attack'),
+
+    trend:
+      col('Trend')
+  };
+
+
+  const raw = [];
+
+
+  for (
+  let i = headerRowIndex + 1;
+  i < data.length;
+  i++
+) {
+    const row =
+      data[i];
+
+
+    const defense =
+      String(
+        row[C.defense] || ''
+      ).trim();
+
+
+    if (!defense) {
+      continue;
+    }
+
+
+    const games =
+      Number(
+        row[C.games]
+      ) || 0;
+
+
+    const positions = [
+
+      {
+        position: 'WR',
+        td:
+          Number(
+            row[C.wr]
+          ) || 0
+      },
+
+      {
+        position: 'TE',
+        td:
+          Number(
+            row[C.te]
+          ) || 0
+      },
+
+      {
+        position: 'RB',
+        td:
+          (
+            Number(
+              row[C.rbRec]
+            ) || 0
+          ) +
+          (
+            Number(
+              row[C.rbRush]
+            ) || 0
+          )
+      },
+
+      {
+        position: 'QB',
+        td:
+          Number(
+            row[C.qbRush]
+          ) || 0
+      }
+    ];
+
+
+    positions.forEach(
+      p => {
+
+        raw.push({
+
+          season:
+            season,
+
+          week:
+            week,
+
+          defense:
+            defense,
+
+          position:
+            p.position,
+
+          games:
+            games,
+
+          total_td:
+            p.td,
+
+          td_per_game:
+            games
+              ? p.td / games
+              : 0,
+
+          last3_td:
+            Number(
+              row[C.last3]
+            ) || 0,
+
+          last3_td_per_game:
+            Number(
+              row[C.last3Game]
+            ) || 0,
+
+          trend:
+            String(
+              row[C.trend] || ''
+            ),
+
+          best_attack:
+            String(
+              row[C.bestAttack] || ''
+            )
+        });
+      }
+    );
+  }
+
+
+  // --------------------------------------------------------
+  // POSITION-SPECIFIC RANKS
+  //
+  // Higher TD/Game allowed = worse defense.
+  //
+  // Target Rank:
+  // 1 = BEST defense for us to attack.
+  //
+  // Defense Rank:
+  // 32 = worst NFL defense at stopping position.
+  // --------------------------------------------------------
+
+  [
+    'WR',
+    'TE',
+    'RB',
+    'QB'
+  ].forEach(
+    position => {
+
+      const group =
+        raw
+          .filter(
+            r =>
+              r.position ===
+              position
+          )
+          .sort(
+            (a, b) =>
+              b.td_per_game -
+              a.td_per_game
+          );
+
+
+      group.forEach(
+        (r, index) => {
+
+          r.target_rank =
+            index + 1;
+
+          r.defense_rank =
+            group.length -
+            index;
+        }
+      );
+    }
+  );
+
+
+  return raw;
+}
+
+
+// ==========================================================
+// WR MATCHUPS
+// ==========================================================
+
+function buildWRMatchupSyncRows_(
+  season,
+  week
+) {
+
+  const ss =
+    SpreadsheetApp.getActive();
+
+
+  const sheet =
+    ss.getSheetByName(
+      'WR Matchups'
+    );
+
+
+  if (!sheet) {
+
+    throw new Error(
+      'WR Matchups sheet not found.'
+    );
+  }
+
+
+  const data =
+    sheet
+      .getDataRange()
+      .getValues();
+
+
+  if (data.length < 2) {
+    return [];
+  }
+
+
+  const headers =
+    data[0].map(
+      h => String(h).trim()
+    );
+
+
+  function find(name) {
+
+    const i =
+      headers.indexOf(name);
+
+    return i;
+  }
+
+
+  function value(
+    row,
+    name
+  ) {
+
+    const i =
+      find(name);
+
+    return i === -1
+      ? null
+      : row[i];
+  }
+
+
+  const rows = [];
+
+
+  for (
+    let i = 1;
+    i < data.length;
+    i++
+  ) {
+
+    const row =
+      data[i];
+
+
+    const player =
+      value(
+        row,
+        'WR'
+      );
+
+
+    if (!player) {
+      continue;
+    }
+
+
+    rows.push({
+
+      season:
+        season,
+
+      week:
+        week,
+
+      player_id:
+        value(
+          row,
+          'Player ID'
+        )
+          ? String(
+              value(
+                row,
+                'Player ID'
+              )
+            )
+          : null,
+
+      player:
+        String(player),
+
+      team:
+        String(
+          value(
+            row,
+            'Team'
+          ) || ''
+        ),
+
+      opponent:
+        String(
+          value(
+            row,
+            'Opponent'
+          ) || ''
+        ),
+
+      home_away:
+        String(
+          value(
+            row,
+            'H/A'
+          ) || ''
+        ),
+
+      season_td:
+        numberOrNull_(
+          value(
+            row,
+            'Season TD'
+          )
+        ),
+
+      last3_td:
+        numberOrNull_(
+          value(
+            row,
+            'Last 3 TD'
+          )
+        ),
+
+      rz_targets:
+        numberOrNull_(
+          value(
+            row,
+            'RZ Targets'
+          )
+        ),
+
+      inside10_targets:
+        numberOrNull_(
+          value(
+            row,
+            'Inside 10 Targets'
+          )
+        ),
+
+      td_rz_score:
+        numberOrNull_(
+          value(
+            row,
+            'TD/RZ Opportunity Score'
+          )
+        ),
+
+      targets_per_game:
+        numberOrNull_(
+          value(
+            row,
+            'Targets / Game'
+          )
+        ),
+
+      target_share:
+        numberOrNull_(
+          value(
+            row,
+            'Target Share'
+          )
+        ),
+
+      route_participation:
+        numberOrNull_(
+          value(
+            row,
+            'Route Participation'
+          )
+        ),
+
+      yards_per_route_run:
+        numberOrNull_(
+          value(
+            row,
+            'Yards / Route Run'
+          )
+        ),
+
+      air_yards_share:
+        numberOrNull_(
+          value(
+            row,
+            'Air Yards Share'
+          )
+        ),
+
+      adot:
+        numberOrNull_(
+          value(
+            row,
+            'WR aDOT'
+          )
+        ),
+
+      wopr:
+        numberOrNull_(
+          value(
+            row,
+            'WOPR'
+          )
+        ),
+
+      usage_score:
+        numberOrNull_(
+          value(
+            row,
+            'FTN WR Usage Score'
+          )
+        ),
+
+      opp_wr_td_allowed:
+        numberOrNull_(
+          value(
+            row,
+            'Opp WR TD Allowed'
+          )
+        ),
+
+      defense_trend:
+        String(
+          value(
+            row,
+            'Defense Trend'
+          ) || ''
+        ),
+
+      secondary_rating:
+        numberOrNull_(
+          value(
+            row,
+            'Secondary Rating'
+          )
+        ),
+
+      weakest_cb:
+        String(
+          value(
+            row,
+            'Worst CB'
+          ) || ''
+        ),
+
+      weakest_cb_rating:
+        numberOrNull_(
+          value(
+            row,
+            'Worst CB Rating'
+          )
+        ),
+
+      defense_wr_score:
+        numberOrNull_(
+          value(
+            row,
+            'Defense WR Score'
+          )
+        ),
+
+      coverage_score:
+        numberOrNull_(
+          value(
+            row,
+            'Coverage Score'
+          )
+        ),
+
+      matchup_score:
+        numberOrNull_(
+          value(
+            row,
+            'WR Matchup Score'
+          )
+        )
+    });
+  }
+
+
+  return rows;
+}
+
+
+// ==========================================================
+// BEST PLAYS
+// ==========================================================
+
+function buildBestPlaySyncRows_(
+  season,
+  week
+) {
+
+  const ss =
+    SpreadsheetApp.getActive();
+
+
+  const sheet =
+    ss.getSheetByName(
+      'Best Plays'
+    );
+
+
+  if (!sheet) {
+
+    throw new Error(
+      'Best Plays sheet not found.'
+    );
+  }
+
+
+  const data =
+    sheet
+      .getDataRange()
+      .getValues();
+
+
+  if (data.length < 2) {
+    return [];
+  }
+
+
+  const headers =
+    data[0].map(
+      h => String(h).trim()
+    );
+
+
+  function val(
+    row,
+    name
+  ) {
+
+    const i =
+      headers.indexOf(name);
+
+    return i === -1
+      ? null
+      : row[i];
+  }
+
+
+  const rows = [];
+
+
+  for (
+    let i = 1;
+    i < data.length;
+    i++
+  ) {
+
+    const row =
+      data[i];
+
+
+    const player =
+      val(
+        row,
+        'Player'
+      );
+
+
+    if (!player) {
+      continue;
+    }
+
+
+    rows.push({
+
+      season:
+        season,
+
+      week:
+        week,
+
+      rank:
+        numberOrNull_(
+          val(
+            row,
+            'Rank'
+          )
+        ),
+
+      player:
+        String(player),
+
+      team:
+        String(
+          val(
+            row,
+            'Team'
+          ) || ''
+        ),
+
+      opponent:
+        String(
+          val(
+            row,
+            'Opponent'
+          ) || ''
+        ),
+
+      home_away:
+        String(
+          val(
+            row,
+            'H/A'
+          ) || ''
+        ),
+
+      play_type:
+        String(
+          val(
+            row,
+            'Play Type'
+          ) || ''
+        ),
+
+      confidence:
+        numberOrNull_(
+          val(
+            row,
+            'Confidence'
+          )
+        ),
+
+      matchup_score:
+        numberOrNull_(
+          val(
+            row,
+            'Matchup Score'
+          )
+        ),
+
+      usage_score:
+        numberOrNull_(
+          val(
+            row,
+            'WR Usage'
+          )
+        ),
+
+      td_rz_score:
+        numberOrNull_(
+          val(
+            row,
+            'TD/RZ'
+          )
+        ),
+
+      defense_score:
+        numberOrNull_(
+          val(
+            row,
+            'Defense'
+          )
+        ),
+
+      coverage_score:
+        numberOrNull_(
+          val(
+            row,
+            'Coverage'
+          )
+        ),
+
+      season_td:
+        numberOrNull_(
+          val(
+            row,
+            'Season TD'
+          )
+        ),
+
+      last3_td:
+        numberOrNull_(
+          val(
+            row,
+            'Last 3 TD'
+          )
+        ),
+
+      targets_per_game:
+        numberOrNull_(
+          val(
+            row,
+            'Targets/Game'
+          )
+        ),
+
+      target_share:
+        numberOrNull_(
+          val(
+            row,
+            'Target Share'
+          )
+        ),
+
+      inside10_targets:
+        numberOrNull_(
+          val(
+            row,
+            'Inside 10'
+          )
+        ),
+
+      weakest_cb:
+        String(
+          val(
+            row,
+            'Weakest CB'
+          ) || ''
+        ),
+
+      cb_weakness:
+        numberOrNull_(
+          val(
+            row,
+            'CB Weakness'
+          )
+        ),
+
+      key_reason:
+        String(
+          val(
+            row,
+            'Key Reason'
+          ) || ''
+        )
+    });
+  }
+
+
+  return rows;
+}
+
+
+// ==========================================================
+// GAME BEST PLAYS
+// ==========================================================
+
+function buildGameBestPlaySyncRows_(
+  season,
+  week
+) {
+
+  const ss =
+    SpreadsheetApp.getActive();
+
+  const sheet =
+    ss.getSheetByName(
+      'Game Best Plays'
+    );
+
+  if (!sheet) {
+    throw new Error(
+      'Game Best Plays sheet not found.'
+    );
+  }
+
+  const data =
+    sheet
+      .getDataRange()
+      .getValues();
+
+  if (data.length < 2) {
+    return [];
+  }
+
+  const headers =
+    data[0].map(
+      h => String(h).trim()
+    );
+
+
+  function val(
+    row,
+    name
+  ) {
+
+    const i =
+      headers.indexOf(name);
+
+    return i === -1
+      ? null
+      : row[i];
+  }
+
+
+  const rows = [];
+
+
+  for (
+    let i = 1;
+    i < data.length;
+    i++
+  ) {
+
+    const row =
+      data[i];
+
+
+    // ------------------------------------------------------
+    // READ GAME
+    // ------------------------------------------------------
+
+    const game =
+      String(
+        val(
+          row,
+          'Game'
+        ) || ''
+      ).trim();
+
+
+    if (!game) {
+      continue;
+    }
+
+
+    // ------------------------------------------------------
+    // SKIP "NO QUALIFYING PLAY" ROWS
+    // ------------------------------------------------------
+
+    const player =
+      String(
+        val(
+          row,
+          'Player'
+        ) || ''
+      ).trim();
+
+
+    if (
+      !player ||
+      player ===
+        'No qualifying play'
+    ) {
+      continue;
+    }
+
+
+    // ------------------------------------------------------
+    // PLAY RANK
+    // ------------------------------------------------------
+
+    const playRank =
+      numberOrNull_(
+        val(
+          row,
+          'Game Rank'
+        )
+      );
+
+
+    if (playRank === null) {
+      continue;
+    }
+
+
+    // ------------------------------------------------------
+    // CREATE STABLE GAME ID
+    //
+    // Example:
+    // 2026-5-TB-DAL
+    // ------------------------------------------------------
+
+    const gameParts =
+      game.split(' @ ');
+
+
+    let awayTeam = '';
+    let homeTeam = '';
+
+
+    if (gameParts.length === 2) {
+
+      awayTeam =
+        gameParts[0].trim();
+
+      homeTeam =
+        gameParts[1].trim();
+    }
+
+
+    const gameId =
+      season +
+      '-' +
+      week +
+      '-' +
+      awayTeam +
+      '-' +
+      homeTeam;
+
+
+    // ------------------------------------------------------
+    // BUILD DATABASE ROW
+    // ------------------------------------------------------
+
+    rows.push({
+
+      season:
+        season,
+
+      week:
+        week,
+
+      game_id:
+        gameId,
+
+      game_date:
+        dateToISO_(
+          val(
+            row,
+            'Date'
+          )
+        ),
+
+      game_time:
+        timeToText_(
+          val(
+            row,
+            'Time ET'
+          )
+        ),
+
+      away_team:
+        awayTeam,
+
+      home_team:
+        homeTeam,
+
+      game_label:
+        game,
+
+      play_rank:
+        playRank,
+
+      player:
+        player,
+
+      player_team:
+        String(
+          val(
+            row,
+            'Team'
+          ) || ''
+        ),
+
+      opponent:
+        String(
+          val(
+            row,
+            'Opponent'
+          ) || ''
+        ),
+
+      home_away:
+        String(
+          val(
+            row,
+            'Team'
+          ) || ''
+        ) === homeTeam
+          ? 'H'
+          : 'A',
+
+      play_type:
+        String(
+          val(
+            row,
+            'Play Type'
+          ) || ''
+        ),
+
+      confidence:
+        numberOrNull_(
+          val(
+            row,
+            'Confidence'
+          )
+        ),
+
+      matchup_score:
+        numberOrNull_(
+          val(
+            row,
+            'Matchup'
+          )
+        ),
+
+      usage_score:
+        numberOrNull_(
+          val(
+            row,
+            'Usage'
+          )
+        ),
+
+      td_rz_score:
+        numberOrNull_(
+          val(
+            row,
+            'TD/RZ'
+          )
+        ),
+
+      defense_score:
+        numberOrNull_(
+          val(
+            row,
+            'Defense'
+          )
+        ),
+
+      coverage_score:
+        numberOrNull_(
+          val(
+            row,
+            'Coverage'
+          )
+        ),
+
+      targets_per_game:
+        numberOrNull_(
+          val(
+            row,
+            'Targets/Game'
+          )
+        ),
+
+      target_share:
+        numberOrNull_(
+          val(
+            row,
+            'Target Share'
+          )
+        ),
+
+      inside10_targets:
+        numberOrNull_(
+          val(
+            row,
+            'Inside 10'
+          )
+        ),
+
+      weakest_cb:
+        String(
+          val(
+            row,
+            'Weakest CB'
+          ) || ''
+        ),
+
+      cb_weakness:
+        numberOrNull_(
+          val(
+            row,
+            'CB Weakness'
+          )
+        ),
+
+      key_reason:
+        String(
+          val(
+            row,
+            'Why We Like It'
+          ) || ''
+        )
+    });
+  }
+
+
+  return rows;
+}
+
+// ==========================================================
+// SYNC HELPERS
+// ==========================================================
+
+function numberOrNull_(
+  value
+) {
+
+  if (
+    value === '' ||
+    value === null ||
+    value === undefined
+  ) {
+    return null;
+  }
+
+
+  const n =
+    Number(value);
+
+
+  return Number.isFinite(n)
+    ? n
+    : null;
+}
+
+
+function dateToISO_(
+  value
+) {
+
+  if (!value) {
+    return null;
+  }
+
+
+  if (
+    Object.prototype
+      .toString
+      .call(value) ===
+      '[object Date]' &&
+    !isNaN(value)
+  ) {
+
+    return Utilities
+      .formatDate(
+        value,
+        Session
+          .getScriptTimeZone(),
+        'yyyy-MM-dd'
+      );
+  }
+
+
+  const d =
+    new Date(value);
+
+
+  if (isNaN(d)) {
+    return null;
+  }
+
+
+  return Utilities
+    .formatDate(
+      d,
+      Session
+        .getScriptTimeZone(),
+      'yyyy-MM-dd'
+    );
+}
+
+
+function timeToText_(
+  value
+) {
+
+  if (!value) {
+    return '';
+  }
+
+
+  if (
+    Object.prototype
+      .toString
+      .call(value) ===
+      '[object Date]' &&
+    !isNaN(value)
+  ) {
+
+    return Utilities
+      .formatDate(
+        value,
+        Session
+          .getScriptTimeZone(),
+        'h:mm a'
+      );
+  }
+
+
+  return String(value);
+}
+
