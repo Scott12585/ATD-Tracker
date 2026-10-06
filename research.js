@@ -4,22 +4,23 @@
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const n=v=>Number(v||0);
   const pct=v=>v==null?'—':`${(n(v)*100).toFixed(1)}%`;
-  const state={week:5,position:'WR',defenses:[],best:[],games:[],wr:[],props:[],bestPosition:'All',propPosition:'All',market:'Passing Yards'};
+  const state={week:5,position:'WR',defenses:[],best:[],games:[],wr:[],props:[],details:[],bestPosition:'All',propPosition:'All',market:'Passing Yards'};
   function client(){return window.atdSupabase}
   async function latestWeek(){const{data,error}=await client().from('nfl_defense_targets').select('week').eq('season',2026).order('week',{ascending:false}).limit(1);if(error)throw error;return data?.[0]?.week||5}
   async function load(){
     const sb=client(); if(!sb)return;
     state.week=await latestWeek();
-    const [d,b,g,w,p]=await Promise.all([
+    const [d,b,g,w,p,detail]=await Promise.all([
       sb.from('nfl_defense_targets').select('*').eq('season',2026).eq('week',state.week).order('position').order('target_rank'),
       sb.from('nfl_best_plays').select('*').eq('season',2026).eq('week',state.week).order('confidence',{ascending:false}),
       sb.from('nfl_game_best_plays').select('*').eq('season',2026).eq('week',state.week).order('game_date').order('game_time').order('play_rank'),
       sb.from('nfl_wr_matchups').select('*').eq('season',2026).eq('week',state.week).order('matchup_score',{ascending:false}),
-      sb.from('nfl_player_props').select('*').eq('season',2026).eq('week',state.week).order('research_score',{ascending:false})
+      sb.from('nfl_player_props').select('*').eq('season',2026).eq('week',state.week).order('research_score',{ascending:false}),
+      sb.from('nfl_player_research_details').select('*').eq('season',2026).eq('week',state.week).order('player')
     ]);
     for(const x of [d,b,g,w])if(x.error)throw x.error;
-    state.defenses=d.data||[];state.best=b.data||[];state.games=g.data||[];state.wr=w.data||[];state.props=p.error?[]:(p.data||[]);
-    $('researchWeekLabel').textContent=`Week ${state.week}`;renderDefenses();renderBest();renderGames();renderWR();renderProps();$('researchStatus').textContent=p.error?'Prop research unavailable.':'';
+    state.defenses=d.data||[];state.best=b.data||[];state.games=g.data||[];state.wr=w.data||[];state.props=p.error?[]:(p.data||[]);state.details=detail.error?[]:(detail.data||[]);
+    $('researchWeekLabel').textContent=`Week ${state.week}`;renderDefenses();renderBest();renderGames();renderWR();renderProps();renderDeepDive('RB');renderDeepDive('TE');$('researchStatus').textContent=p.error?'Prop research unavailable.':detail.error?'Production details unavailable.':'';
   }
   function renderDefenses(){
     const rows=state.defenses.filter(x=>x.position===state.position).slice(0,10);
@@ -54,7 +55,8 @@
   }
   const teamKey=t=>t==='LA'?'LAR':t;
   const teamOf=x=>x.team||x.player_team;
-  const samePlayer=(a,b)=>a.player===b.player&&teamKey(teamOf(a))===teamKey(teamOf(b));
+  const nameKey=v=>String(v||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9 ]/g,' ').replace(/\b(jr|sr|ii|iii|iv|v)\b/g,'').replace(/\s+/g,' ').trim();
+  const samePlayer=(a,b)=>nameKey(a.player)===nameKey(b.player)&&teamKey(teamOf(a))===teamKey(teamOf(b))&&(!a.position||!b.position||a.position===b.position);
   const value=v=>v!==null&&v!==undefined&&v!==''&&Number.isFinite(Number(v));
   const fmt=(v,d=1)=>value(v)?Number(v).toFixed(d):'—';
   function playerLink(x,source,label){return `<button type="button" class="research-detail-link" data-detail-source="${source}" data-detail-index="${state[source].indexOf(x)}">${esc(label||x.player)}</button>`}
@@ -69,32 +71,54 @@
     const trend=current.match(/; usage ([^.]+)\./)?.[1]||'Unknown';
     return {text,current,pass:metric('pass'),rush:metric('carries'),targets:metric('targets'),weeks,role,trend,source:current.split('Source: ')[1]||''};
   }
+  function productionOf(x){return state.details.find(d=>samePlayer(d,x))?.detail||null}
   function explanation(x,market){
-    const pos=positionOf(x), c=contextOf(x), reasons=[];
-    const wr=state.wr.find(w=>samePlayer(w,x));
+    const pos=positionOf(x), c=contextOf(x), production=productionOf(x), wr=state.wr.find(w=>samePlayer(w,x)), reasons=[];
     const atd=market==='Anytime TD'||market==='WR Matchup';
-    const metric=market.startsWith('Passing')?'pass':market.startsWith('Rushing')?'rush':market.startsWith('Receiving')?'targets':pos==='QB'?'rush':pos==='RB'?'rush':'targets';
-    const label={pass:'pass attempts',rush:'carries',targets:'targets'}[metric];
-    if(!value(c[metric])&&!wr) reasons.push('Recent workload is not included in this synced record, so the explanation cannot establish how many opportunities this player is receiving.');
-    if(value(c[metric])) reasons.push(`${x.player} averaged ${fmt(c[metric])} ${label} per completed team game in recent weeks ${c.weeks||'shown in the source'}. ${metric==='pass'?'Passing volume supplies opportunities for passing production.':metric==='rush'?'Rushing volume supplies opportunities for yards and rushing touchdowns.':'Targets supply opportunities for receiving yards and touchdowns.'}`);
-    if(atd&&pos==='RB'&&value(c.targets)) reasons.push(`An additional ${fmt(c.targets)} targets per recent team game adds receiving opportunities to the rushing workload; either a rushing or receiving touchdown can count for anytime TD.`);
-    if(wr&&(atd||market.startsWith('Receiving'))){
-      if(!value(c.targets)&&value(wr.targets_per_game)) reasons.push(`The WR snapshot shows ${fmt(wr.targets_per_game)} targets per game${value(wr.target_share)?` and ${(Number(wr.target_share)*100).toFixed(1)}% of team targets`:''}, which measures his share of receiving opportunities.`);
-      if(value(wr.inside10_targets)) reasons.push(`${wr.inside10_targets} inside-the-10 targets in the WR snapshot show ${Number(wr.inside10_targets)>0?'usage near the goal line, where a catch can produce a touchdown':'no recorded receiving opportunities inside the 10 in that snapshot'}.`);
-      if(value(wr.season_td)&&value(wr.last3_td)) reasons.push(`He has ${wr.season_td} season receiving touchdowns, including ${wr.last3_td} in the last three games reported by the WR model. Past touchdowns describe production; they do not guarantee another score.`);
-      const scores=[['usage',wr.usage_score],['TD/red-zone',wr.td_rz_score],['defense',wr.defense_wr_score],['coverage',wr.coverage_score]].filter(a=>value(a[1])).sort((a,b)=>Number(b[1])-Number(a[1]));
-      if(scores.length) reasons.push(`Within the WR model, the highest component is ${scores[0][0]} (${fmt(scores[0][1],0)}/100)${scores.length>1?`, while ${scores[scores.length-1][0]} is the lowest (${fmt(scores[scores.length-1][1],0)}/100)`:''}. The overall ranking combines these signals.`);
+    const primary=market.startsWith('Passing')?'pass':market.startsWith('Rushing')?'rush':market.startsWith('Receiving')?'rec':pos==='QB'||pos==='RB'?'rush':'rec';
+    const direction={pass:'passing',rush:'rushing',rec:'receiving'}[primary];
+    if(production){
+      const last=production.latest||{}, recent=production.recent||{}, defense=production.defense||{};
+      const yards=primary+'_yards',td=primary+'_td',weeks=production.recent_weeks||[],games=Number(production.recent_games||weeks.length);
+      if(value(last[yards])) reasons.push(`${x.player} had ${fmt(last[yards],0)} ${direction} yards${value(last[td])?` and ${fmt(last[td],0)} ${direction} touchdowns`:''} in his team's last completed game (Week ${production.latest_week}).`);
+      if(value(recent[yards])) reasons.push(`Over the last ${games} completed team games (Weeks ${weeks.join(', ')}), he averaged ${fmt(recent[yards])} ${direction} yards${value(recent[td])?` and ${fmt(recent[td],1)} ${direction} touchdowns`:''} per game.`);
+      if(value(defense[yards])) reasons.push(`${x.opponent} allows ${fmt(defense[yards])} ${direction} yards per game ${primary==='pass'?'to quarterbacks':`to ${pos}s`}${value(defense[td])?`, plus ${fmt(defense[td],1)} ${direction} touchdowns per game`:''}, across ${defense.games} completed games this season.`);
+      if(atd&&pos==='RB'){
+        if(value(last.rec_yards)&&value(last.rec_td))reasons.push(`He also had ${fmt(last.rec_yards,0)} receiving yards and ${fmt(last.rec_td,0)} receiving touchdowns in that last game. Either a rushing or receiving touchdown can count for an RB anytime-TD bet.`);
+        if(value(defense.rec_td))reasons.push(`${x.opponent} also allows ${value(defense.rec_yards)?fmt(defense.rec_yards)+' receiving yards and ':''}${fmt(defense.rec_td,1)} receiving touchdowns per game to RBs.`);
+      }
+      const volume=primary==='pass'?'attempts':primary==='rush'?'carries':'targets';
+      if(value(last[volume])&&value(recent[volume]))reasons.push(`Workload: ${fmt(last[volume],0)} ${volume==='attempts'?'pass attempts':volume} in the last team game; ${fmt(recent[volume])} per game over the last ${games}.`);
+      if(!value(defense[yards]))reasons.push(`A complete ${x.opponent} ${direction}-yard allowance is unavailable in this snapshot.`);
+    }else{
+      const metric=primary==='pass'?'pass':primary==='rush'?'rush':'targets', label={pass:'pass attempts',rush:'carries',targets:'targets'}[metric];
+      if(value(c[metric]))reasons.push(`${x.player} averaged ${fmt(c[metric])} ${label} per completed team game in Weeks ${c.weeks||'shown in the source'}. Last-game production and opponent yard allowances have not been synced for this player yet.`);
+      else if(wr&&value(wr.targets_per_game))reasons.push(`${x.player} averages ${fmt(wr.targets_per_game)} targets per game in the WR snapshot. Last-game yardage has not been synced yet.`);
+      else reasons.push('Recent production and opponent yard allowances are not available for this player yet.');
     }
-    if(atd){
-      const defense=state.defenses.find(d=>teamKey(d.defense)===teamKey(x.opponent)&&d.position===pos);
-      if(defense&&value(defense.td_per_game)&&value(defense.games)) reasons.push(`${x.opponent} has allowed ${fmt(defense.td_per_game,2)} ${pos==='QB'?'QB rushing touchdowns':pos+' touchdowns'} per game across ${defense.games} games. Its ${pos} attack rank is ${defense.target_rank??'unavailable'} (${Number(defense.target_rank)<=10?'among the ten most permissive defenses in this view':'outside the ten most permissive defenses in this view'}). This is touchdown matchup context${Number(defense.games)<5?', with a small sample':''}.`);
-      if(pos==='QB') reasons.push('This anytime-TD ranking uses rushing touchdown signals. Passing touchdowns do not count toward a quarterback anytime-TD bet.');
-    }else if(pos!=='WR') reasons.push(`The ${market.toLowerCase()} score combines a position-specific FTN player index with a market-specific defensive allowance index. The individual component values are not included in this synced dataset, so no additional numeric breakdown is inferred.`);
-    if(c.role!=='Role unverified') reasons.push(`Current role: ${c.role}. ${c.role==='Listed starter'?'The depth source lists him first at his position; it does not confirm game-day availability.':'Use the role label alongside recent volume; it is not confirmation of game-day availability.'}`);
-    if(c.trend==='Up'||c.trend==='Down') reasons.push(`Recent primary usage is ${c.trend.toLowerCase()} versus the preceding three-team-game window; this trend describes workload, not a forecast for this particular market.`);
-    if(!reasons.length) reasons.push('The synced model supplies a research ranking, but detailed workload and component evidence are not available for this player.');
-    return {reasons,c,wr};
+    if(atd&&pos==='WR'&&wr){
+      if(value(wr.inside10_targets))reasons.push(`Goal-line receiving usage: ${fmt(wr.inside10_targets,0)} inside-the-10 targets in the WR snapshot.`);
+      if(value(wr.season_td)&&value(wr.last3_td))reasons.push(`Receiving touchdowns: ${fmt(wr.season_td,0)} this season; ${fmt(wr.last3_td,0)} in the WR model's last-three-game window.`);
+    }
+    if(atd&&pos==='QB')reasons.push('For anytime TD, only his rushing touchdown signal is used. Passing touchdowns do not count toward this bet.');
+    return {reasons,c,wr,production};
   }
+  function renderDeepDive(pos){
+    const q=($(pos==='RB'?'researchRBSearch':'researchTESearch')?.value||'').trim().toLowerCase();
+    const hide=$(pos==='RB'?'researchRBAvailability':'researchTEAvailability')?.value!=='all';
+    const rows=state.details.filter(x=>x.position===pos&&(!q||`${x.player} ${x.team} ${x.opponent}`.toLowerCase().includes(q))&&(!hide||!restricted(x.detail?.availability))).sort((a,b)=>{
+      const score=x=>state.best.find(r=>samePlayer(r,x))?.confidence??-1;
+      return Number(score(b))-Number(score(a))||a.player.localeCompare(b.player);
+    });
+    $('research'+pos+'Count').textContent=rows.length+' players';
+    const metric=pos==='RB'?'rush_yards':'rec_yards';
+    const score=(x,market)=>state.props.find(p=>samePlayer(p,x)&&p.market===market)?.research_score;
+    $('research'+pos+'TableBody').innerHTML=rows.map(x=>{
+      const d=x.detail||{},recent=d.recent||{},last=d.latest||{},def=d.defense||{},best=state.best.find(b=>samePlayer(b,x));
+      return `<tr><td>${playerLink(x,'details')}<small>${esc(x.team)} vs ${esc(x.opponent)} · ${esc(d.role||'Role unverified')}</small></td><td>${fmt(best?.confidence,0)}</td><td>${fmt(score(x,pos==='RB'?'Rushing Yards':'Receiving Yards'),0)}</td><td>${fmt(score(x,pos==='TE'?'Receiving TD':'Receiving Yards'),0)}</td><td>${fmt(last[metric],0)}<small>Week ${esc(d.latest_week??'—')}</small></td><td>${fmt(recent[metric])}</td><td>${fmt(def[metric])}<small>${esc(def.games??'—')} games</small></td><td>${fmt(recent[pos==='RB'?'carries':'targets'])}</td><td>${esc(d.availability||'Unverified')}</td></tr>`;
+    }).join('')||'<tr><td colspan="9">No synced players match these filters.</td></tr>';
+  }
+  function restricted(status){return /^(out|inactive|injured reserve|ir|suspended|reserve|practice squad|released|retired|exempt)(\b|$)/i.test(status||'')}
   function detailFrame(title,body){
     $('researchDetailTitle').textContent=title;
     $('researchDetailBody').innerHTML=body;
@@ -102,14 +126,14 @@
     if(!dialog.open)dialog.showModal();
   }
   function openPlayer(x,market='Anytime TD'){
-    const pos=positionOf(x), data=explanation(x,market), score=market==='Anytime TD'?x.confidence:market==='WR Matchup'?x.matchup_score:x.research_score;
+    const pos=positionOf(x), data=explanation(x,market), detail=productionOf(x), score=market==='Anytime TD'?(x.confidence??state.best.find(b=>samePlayer(b,x))?.confidence):market==='WR Matchup'?x.matchup_score:x.research_score;
     const props=state.props.filter(p=>samePlayer(p,x));
     const best=state.best.find(b=>samePlayer(b,x));
-    const status=x.availability||best?.availability||props[0]?.availability||'Unverified';
+    const status=x.availability||detail?.availability||best?.availability||props[0]?.availability||'Unverified';
     const caution=/out|reserve|inactive|released|practice squad|suspended/i.test(status)?'The synced status indicates a restriction. Review availability before considering this player.':/questionable|doubtful/i.test(status)?'The injury designation needs review before considering this player.':'Active-roster and depth labels do not establish game-day availability.';
-    const metrics=[['Recent pass attempts/G',data.c.pass],['Recent carries/G',data.c.rush],['Recent targets/G',data.c.targets]];
+    const metrics=[['Recent pass attempts/G',detail?.recent?.attempts??data.c.pass],['Recent carries/G',detail?.recent?.carries??data.c.rush],['Recent targets/G',detail?.recent?.targets??data.c.targets]];
     const updated=x.updated_at?new Date(x.updated_at):null;
-    detailFrame(x.player,`<p class="research-detail-kicker">${esc(pos)} · ${esc(teamOf(x))} vs ${esc(x.opponent)} · Week ${state.week}</p><div class="research-detail-hero"><span class="research-score">${value(score)?Math.round(Number(score)):'—'}</span><div><strong>${esc(market)}</strong><small>Research index / 100</small></div></div><div class="research-detail-markets">${best?playerLink(best,'best','Anytime TD'):''}${props.map(p=>playerLink(p,'props',p.market)).join('')}</div><h3>Why the model ranks this player here</h3>${data.reasons.map(r=>`<p>${esc(r)}</p>`).join('')}<div class="research-detail-metrics">${metrics.map(([label,v])=>`<div><small>${esc(label)}</small><strong>${fmt(v)}</strong></div>`).join('')}</div><h3>Availability and limits</h3><p><strong>${esc(status)}</strong> · ${esc(data.c.role)}</p><p>${esc(caution)} These scores rank research signals; they are not hit probabilities, projected yards, or evidence that a sportsbook line offers value.</p><details><summary>Model and source details</summary><p>${esc(x.score_basis||best?.score_basis||'WR matchup research model')}</p><p>${esc(data.c.source||'Current context source not included in this snapshot.')}</p><p>Synced: ${updated&&!Number.isNaN(updated.getTime())?esc(updated.toLocaleString()):'Unknown'}</p>${data.c.text?`<p class="research-source-note">${esc(data.c.text)}</p>`:''}</details>`);
+    detailFrame(x.player,`<p class="research-detail-kicker">${esc(pos)} · ${esc(teamOf(x))} vs ${esc(x.opponent)} · Week ${state.week}</p><div class="research-detail-hero"><span class="research-score">${value(score)?Math.round(Number(score)):'—'}</span><div><strong>${esc(market)}</strong><small>${value(score)?'Research index / 100':'No qualifying score synced for this market'}</small></div></div><div class="research-detail-markets">${best?playerLink(best,'best','Anytime TD'):''}${props.map(p=>playerLink(p,'props',p.market)).join('')}</div><h3>Recent production vs. opponent</h3>${data.reasons.map(r=>`<p>${esc(r)}</p>`).join('')}<div class="research-detail-metrics">${metrics.map(([label,v])=>`<div><small>${esc(label)}</small><strong>${fmt(v)}</strong></div>`).join('')}</div><h3>Availability and limits</h3><p><strong>${esc(status)}</strong> · ${esc(detail?.role||data.c.role)}</p><p>${esc(caution)} Averages use completed games before Week ${state.week}. Missed team games count as zero when stats coverage is present. Defensive yardage is allowed to the entire position group, not to one player. These scores rank research signals; they are not hit probabilities, projected yards, or evidence that a sportsbook line offers value.</p><details><summary>Model and source details</summary><p>${esc(x.score_basis||best?.score_basis||(pos==='WR'?'WR matchup research model':'Position-specific FTN player and defensive allowance research indices'))}</p><p>${esc(detail?.source||data.c.source||'Current context source not included in this snapshot.')}</p><p>Synced: ${updated&&!Number.isNaN(updated.getTime())?esc(updated.toLocaleString()):'Unknown'}</p>${data.c.text?`<p class="research-source-note">${esc(data.c.text)}</p>`:''}</details>`);
   }
   function openGame(label){
     const games=state.games.filter(g=>g.game_label===label);if(!games.length)return;
@@ -149,7 +173,7 @@
       if(!button)return;
       if(button.dataset.detailGame!==undefined){openGame(button.dataset.detailGame);return;}
       const source=button.dataset.detailSource;
-      if(!['best','props','wr','games'].includes(source))return;
+      if(!['best','props','wr','games','details'].includes(source))return;
       const row=state[source][Number(button.dataset.detailIndex)];
       if(row)openPlayer(row,source==='props'?row.market:source==='wr'?'WR Matchup':'Anytime TD');
     }
@@ -158,7 +182,9 @@
     $('researchBestPosition')?.addEventListener('change',e=>{state.bestPosition=e.target.value;renderBest()});
     $('researchPropPosition')?.addEventListener('change',e=>{state.propPosition=e.target.value;renderProps()});
     $('researchPropMarket')?.addEventListener('change',e=>{state.market=e.target.value;renderProps()});
+    ['RB','TE'].forEach(pos=>{ $('research'+pos+'Search')?.addEventListener('input',()=>renderDeepDive(pos));$('research'+pos+'Availability')?.addEventListener('change',()=>renderDeepDive(pos)); });
     $('researchSearch')?.addEventListener('input',renderWR);$('researchMinConfidence')?.addEventListener('change',renderWR);
   });
 })();
+
 
