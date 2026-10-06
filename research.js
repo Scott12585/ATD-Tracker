@@ -23,24 +23,25 @@
   }
   function renderDefenses(){
     const rows=state.defenses.filter(x=>x.position===state.position).slice(0,10);
+    $('researchDefensesCount').textContent=state.position+' · top '+rows.length;
     $('defenseTargetList').innerHTML=rows.map((x,i)=>`<button class="research-rank-row" type="button" data-defense="${esc(x.defense)}"><span class="research-rank">${i+1}</span><span class="research-team"><strong>${esc(x.defense)}</strong><small>${esc(x.position)} defense rank: ${x.defense_rank||'—'}</small></span><span class="research-metric"><strong>${n(x.td_per_game).toFixed(2)}</strong><small>TD/G allowed</small></span></button>`).join('')||'<div class="dashboard-empty">No defense data.</div>';
     document.querySelectorAll('.research-pos').forEach(b=>b.classList.toggle('active',b.dataset.position===state.position));
   }
   function positionOf(x){return x.position||(/^(QB|RB|TE) Anytime TD$/.exec(x.play_type||'')?.[1])||'WR'}
   function renderBest(){
-    const positions=state.bestPosition==='All'?['WR','QB','RB','TE']:[state.bestPosition];
-    $('researchBestPlays').innerHTML=positions.map(pos=>{
-      const rows=state.best.filter(x=>positionOf(x)===pos).sort((a,b)=>pos==='WR'?n(a.rank)-n(b.rank):n(b.confidence)-n(a.confidence)).slice(0,8);
-      if(!rows.length)return '';
-      return `<h3>${esc(pos)} · Anytime TD</h3>`+rows.map(x=>`<article class="research-play"><div><span class="research-score">${Math.round(n(x.confidence))}</span></div><div>${playerLink(x,'best')}<span>${esc(x.team)} vs ${esc(x.opponent)} · ${esc(x.play_type||'Anytime TD')}</span><small>Research score · ${esc(x.availability||'Unverified')}</small><small>${esc(explanation(x,'Anytime TD').reasons[0])}</small></div></article>`).join('');
-    }).join('')||'<div class="dashboard-empty">No qualifying plays.</div>';
+    const rows=state.best.filter(x=>state.bestPosition==='All'||positionOf(x)===state.bestPosition)
+      .sort((a,b)=>n(b.confidence)-n(a.confidence)||String(a.player).localeCompare(String(b.player)));
+    $('researchBestCount').textContent=rows.length+' plays';
+    $('researchBestPlays').innerHTML=rows.map((x,i)=>`<article class="research-play"><div><small class="research-list-rank">#${i+1}</small><span class="research-score">${Math.round(n(x.confidence))}</span></div><div>${playerLink(x,'best')}<span><span class="research-position-badge">${esc(positionOf(x))}</span> ${esc(x.team)} vs ${esc(x.opponent)} · Anytime TD</span><small>Research score · ${esc(x.availability||'Unverified')}</small><small>${esc(explanation(x,'Anytime TD').reasons[0])}</small></div></article>`).join('')||'<div class="dashboard-empty">No qualifying plays.</div>';
   }
   function renderProps(){
     const rows=state.props.filter(x=>x.market===state.market&&(state.propPosition==='All'||x.position===state.propPosition));
+    $('researchPropsCount').textContent=rows.length+' props';
     $('researchProps').innerHTML=rows.slice(0,30).map(x=>`<article class="research-play"><div><span class="research-score">${Math.round(n(x.research_score))}</span></div><div>${playerLink(x,'props',x.player+' · '+x.position)}<span>${esc(x.team)} vs ${esc(x.opponent)} · ${esc(x.market)}</span><small>Research score · ${esc(x.availability||'Unverified')}</small><small>${esc(explanation(x,x.market).reasons[0])}</small></div></article>`).join('')||'<div class="dashboard-empty">No synced research for this market and position.</div>';
   }
   function renderGames(){
     const by={};state.games.forEach(x=>(by[x.game_label]??=[]).push(x));
+    $('researchGamesCount').textContent=Object.keys(by).length+' games';
     $('researchGames').innerHTML=Object.entries(by).map(([game,plays])=>`<article class="research-game"><h3><button type="button" class="research-detail-link" data-detail-game="${esc(game)}">${esc(game)} <span aria-hidden="true">›</span></button></h3>${plays.map(x=>`<div class="research-game-play"><span>#${x.play_rank}</span><div>${playerLink(x,'games')}<small>${esc(x.play_type)} · ${Math.round(n(x.confidence))} research score · ${esc(x.availability||'Unverified')}</small></div></div>`).join('')}</article>`).join('')||'<div class="dashboard-empty">No game plays.</div>';
   }
   function renderWR(){
@@ -48,6 +49,7 @@
     const min=n($('researchMinConfidence')?.value||0);
     const conf=new Map(state.best.map(x=>[`${x.player}|${x.team}`,n(x.confidence)]));
     const rows=state.wr.filter(x=>(!q||`${x.player} ${x.team} ${x.opponent}`.toLowerCase().includes(q))&&(!min||n(conf.get(`${x.player}|${x.team}`))>=min));
+    $('researchWRCount').textContent=rows.length+' WRs';
     $('researchWRTableBody').innerHTML=rows.slice(0,100).map(x=>`<tr><td>${playerLink(x,'wr')}<small>${esc(x.team)} vs ${esc(x.opponent)}</small></td><td>${Math.round(n(x.matchup_score))}</td><td>${Math.round(n(x.usage_score))}</td><td>${Math.round(n(x.td_rz_score))}</td><td>${Math.round(n(x.defense_wr_score))}</td><td>${Math.round(n(x.coverage_score))}</td><td>${n(x.targets_per_game).toFixed(1)}</td><td>${pct(x.target_share)}</td><td>${x.inside10_targets??'—'}</td></tr>`).join('');
   }
   const teamKey=t=>t==='LA'?'LAR':t;
@@ -121,6 +123,24 @@
   function show(){$('researchStatus').textContent='Loading…';document.querySelectorAll('#appView .view').forEach(v=>v.classList.add('hidden'));$('researchView').classList.remove('hidden');load().catch(e=>{$('researchStatus').textContent=e.message||'Could not load research.';console.error(e)})}
   function back(){$('researchView').classList.add('hidden');$('dashboardView').classList.remove('hidden')}
   document.addEventListener('DOMContentLoaded',()=>{
+    document.querySelectorAll('[data-research-jump]').forEach(button=>button.addEventListener('click',()=>{
+      const section=$(button.dataset.researchJump);
+      if(!section)return;
+      section.open=true;
+      section.scrollIntoView({behavior:window.matchMedia?.('(prefers-reduced-motion: reduce)').matches?'auto':'smooth',block:'start'});
+    }));
+    $('researchExpandAll')?.addEventListener('click',()=>{
+      const sections=Array.from(document.querySelectorAll('.research-section'));
+      const open=sections.some(section=>!section.open);
+      sections.forEach(section=>section.open=open);
+      $('researchExpandAll').textContent=open?'Collapse all':'Expand all';
+    });
+    document.querySelectorAll('.research-section').forEach(section=>section.addEventListener('toggle',()=>{
+      $('researchExpandAll').textContent=Array.from(document.querySelectorAll('.research-section')).every(x=>x.open)?'Collapse all':'Expand all';
+    }));
+    const updateResearchEntry=()=>{ $('openResearchBtn').hidden=(window.atdCurrentSport||'football')!=='football'; };
+    document.addEventListener('click',event=>{if(event.target.closest('[data-sport]'))setTimeout(updateResearchEntry,0)});
+    updateResearchEntry();
     $('researchView')?.addEventListener('click',detailClick);
     $('researchDetailBody')?.addEventListener('click',detailClick);
     $('researchDetailClose')?.addEventListener('click',()=>$('researchDetailDialog').close());
@@ -141,3 +161,4 @@
     $('researchSearch')?.addEventListener('input',renderWR);$('researchMinConfidence')?.addEventListener('change',renderWR);
   });
 })();
+
