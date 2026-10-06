@@ -4,13 +4,13 @@
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const n=v=>Number(v||0);
   const pct=v=>v==null?'—':`${(n(v)*100).toFixed(1)}%`;
-  const state={week:5,position:'WR',defenses:[],best:[],games:[],wr:[],props:[],details:[],defenseWeeks:[],ou:[],bestPosition:'All',propPosition:'All',market:'Passing Yards'};
+  const state={week:5,position:'WR',defenses:[],best:[],games:[],wr:[],props:[],details:[],defenseWeeks:[],ou:[],performance:[],backtests:[],bestPosition:'All',propPosition:'All',market:'Passing Yards'};
   function client(){return window.atdSupabase}
   async function latestWeek(){const{data,error}=await client().from('nfl_defense_targets').select('week').eq('season',2026).order('week',{ascending:false}).limit(1);if(error)throw error;return data?.[0]?.week||5}
   async function load(){
     const sb=client(); if(!sb)return;
     state.week=await latestWeek();
-    const [d,b,g,w,p,detail,dw,ou]=await Promise.all([
+    const [d,b,g,w,p,detail,dw,ou,performance,bt]=await Promise.all([
       sb.from('nfl_defense_targets').select('*').eq('season',2026).eq('week',state.week).order('position').order('target_rank'),
       sb.from('nfl_best_plays').select('*').eq('season',2026).eq('week',state.week).order('confidence',{ascending:false}),
       sb.from('nfl_game_best_plays').select('*').eq('season',2026).eq('week',state.week).order('game_date').order('game_time').order('play_rank'),
@@ -18,11 +18,13 @@
       sb.from('nfl_player_props').select('*').eq('season',2026).eq('week',state.week).order('research_score',{ascending:false}),
       sb.from('nfl_player_research_details').select('*').eq('season',2026).eq('week',state.week).order('player'),
       sb.from('nfl_defense_weekly_tds').select('*').eq('season',2026).eq('target_week',state.week).order('game_week'),
-      sb.from('nfl_player_ou').select('*').eq('season',2026).eq('week',state.week).order('player')
+      sb.from('nfl_player_ou').select('*').eq('season',2026).eq('week',state.week).order('player'),
+      sb.rpc('nfl_ou_performance',{p_season:2026}),
+      sb.from('nfl_ou_backtests').select('*').order('season',{ascending:false}).order('market')
     ]);
     for(const x of [d,b,g,w])if(x.error)throw x.error;
-    state.defenses=d.data||[];state.best=b.data||[];state.games=g.data||[];state.wr=w.data||[];state.props=p.error?[]:(p.data||[]);state.details=detail.error?[]:(detail.data||[]);state.defenseWeeks=dw.error?[]:(dw.data||[]);state.ou=ou.error?[]:(ou.data||[]);
-    $('researchWeekLabel').textContent=`Week ${state.week}`;renderDefenses();renderBest();renderGames();renderWR();renderProps();renderOU();renderDeepDive('RB');renderDeepDive('TE');$('researchStatus').textContent=p.error?'Prop research unavailable.':detail.error?'Production details unavailable.':'';
+    state.defenses=d.data||[];state.best=b.data||[];state.games=g.data||[];state.wr=w.data||[];state.props=p.error?[]:(p.data||[]);state.details=detail.error?[]:(detail.data||[]);state.defenseWeeks=dw.error?[]:(dw.data||[]);state.ou=ou.error?[]:(ou.data||[]);state.performance=performance.error?[]:(performance.data||[]);state.backtests=bt.error?[]:(bt.data||[]);state.trackingError=performance.error||bt.error;
+    $('researchWeekLabel').textContent=`Week ${state.week}`;renderDefenses();renderBest();renderGames();renderWR();renderProps();renderOU();renderPerformance();renderDeepDive('RB');renderDeepDive('TE');$('researchStatus').textContent=p.error?'Prop research unavailable.':detail.error?'Production details unavailable.':'';
   }
   function renderDefenses(){
     const rows=state.defenses.filter(x=>x.position===state.position).slice(0,10);
@@ -71,6 +73,13 @@
     }).join('')||`<div class="dashboard-empty">${!state.ou.length?'DraftKings projections have not been synced yet.':mode==='candidates'?'No projected overs pass the workload, freshness and projection-gap screens. Choose All projections to inspect the inputs.':'No projections match these filters.'}</div>`;
     const paired=state.ou.filter(x=>x.quote).length;
     $('researchOUStatus').textContent=state.ou.length?`${state.ou.length} projections · ${paired} paired DraftKings lines. Candidates require ≥10% projection gap and current data; sorted by percentage gap.`:'Awaiting the first odds refresh.';
+  }
+  function renderPerformance(){
+    const summary=state.performance,graded=summary.reduce((n,r)=>n+r.graded,0),tracked=summary.reduce((n,r)=>n+r.tracked,0);
+    $('researchPerformanceCount').textContent=tracked+' tracked · '+graded+' graded';
+    $('researchPerformanceStatus').textContent=state.trackingError?'Some performance data could not be loaded.':`${tracked} projected-over signals saved; ${graded} have final stat results. One latest pregame observation per player/market/game. This sample does not establish a reliable hit probability.`;
+    $('researchPerformanceBody').innerHTML=summary.map(r=>`<tr><td>${esc(r.market)}</td><td>${r.wins}–${r.losses}–${r.pushes}</td><td>${r.wins+r.losses?((r.wins/(r.wins+r.losses))*100).toFixed(1)+'%':'—'}</td><td>${r.pending}</td><td>${r.graded?((r.net/r.graded)*100).toFixed(1)+'%':'—'}</td></tr>`).join('')||'<tr><td colspan="5">No promoted signals have been saved yet.</td></tr>';
+    $('researchBacktestBody').innerHTML=state.backtests.map(r=>`<tr><td>${esc(r.season)}</td><td>${esc(r.market)}</td><td>${esc(r.samples)}</td><td>${fmt(r.mae)}</td><td>${fmt(r.recent_baseline_mae)}</td><td>${Number(r.bias)>0?'+':''}${fmt(r.bias)}</td></tr>`).join('')||'<tr><td colspan="6">Historical projection tests have not been saved yet.</td></tr>';
   }
   function renderGames(){
     const by={};state.games.forEach(x=>(by[x.game_label]??=[]).push(x));
