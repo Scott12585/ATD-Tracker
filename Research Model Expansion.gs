@@ -611,12 +611,27 @@ function expansionDefenseContext_(schedule, logs, raw, season, week) {
   raw.filter(r => Number(r.season) === season && Number(r.week) >= 1 && Number(r.week) < week && (!r.season_type || r.season_type === 'REG')).forEach(r => {
     const team = normalizeNFLTeam(r.recent_team || r.team), game = offenseWeek[team+'|'+Number(r.week)];
     if (!game) return;
-    const id = r.player_id || r.gsis_id;
-    if (!id) throw new Error('Raw Player Stats: missing player ID');
-    const key = id+'|'+Number(r.week);
+    const pos = normalizePosition(r.position);
+    // Raw stats also contain WRs, kickers, and other positions that
+    // do not feed these defensive yardage metrics.
+    if (!['QB','RB','TE'].includes(pos)) return;
+    const id = String(r.player_id || r.gsis_id || '').trim();
+    const name = String(r.player_display_name || r.player_name || r.player || '').trim();
+    const identity = id ? 'id:'+id : name ? 'name:'+name.toLowerCase()+'|'+pos : '';
+    if (!identity) {
+      // Do not silently omit relevant yards: mark this game's affected
+      // metrics unavailable so the model uses its labeled neutral fallback.
+      const affected = pos === 'QB' ? ['passYards','QBrushYards'] :
+        pos === 'RB' ? ['RBrushYards','RBrecYards'] : ['TErecYards'];
+      if (!game.invalid) game.invalid = {};
+      affected.forEach(k => game.invalid[k] = true);
+      console.log('Raw Player Stats: unidentified '+pos+' row for '+team+
+        ' week '+r.week+'; affected defensive yardage uses neutral fallback.');
+      return;
+    }
+    const key = identity+'|'+team+'|'+Number(r.week);
     if (seenPlayers.has(key)) throw new Error('Duplicate weekly player stats: ' + key);
     seenPlayers.add(key);
-    const pos = normalizePosition(r.position);
     const metrics = [];
     if (pos === 'QB') metrics.push(['passing_yards','passYards'],['rushing_yards','QBrushYards']);
     if (pos === 'RB') metrics.push(['rushing_yards','RBrushYards'],['receiving_yards','RBrecYards']);
@@ -634,7 +649,7 @@ function expansionDefenseContext_(schedule, logs, raw, season, week) {
   Object.keys(defenses).forEach(team => {
     const list = defenses[team]; games[team] = list.length; rates[team] = {}; indices[team] = {};
     keys.forEach(k => {
-      if (list.every(g => g.present[k])) rates[team][k] = list.reduce((s,g) => s+g.values[k],0)/list.length;
+      if (list.every(g => g.present[k] && !(g.invalid && g.invalid[k]))) rates[team][k] = list.reduce((s,g) => s+g.values[k],0)/list.length;
     });
   });
   keys.forEach(k => {
