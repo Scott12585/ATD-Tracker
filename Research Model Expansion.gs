@@ -1040,7 +1040,7 @@ function syncExpandedNFLResearchToSupabase() {
  * Run buildPlayerAvailabilityAndUsage(), buildExpandedBestPlays(),
  * then testPlayerAvailabilityAndUsage() and syncExpandedNFLResearchToSupabase().
  * Sources: weekly raw stats + current roster + selected-week injury
- * reports + fresh ESPN injury/depth snapshots for near-term games.
+ * reports + fresh nflverse depth snapshots for near-term games.
  * Roster ACT and depth rank 1 do NOT confirm game-day availability.
  ***************************************************************/
 function expansionNameKey_(name,team) {
@@ -1331,3 +1331,45 @@ function expansionApplyCurrentContext_(rows,indexed) {
   });
 }
 
+
+/***************************************************************
+ * ONE-CLICK REFRESH
+ * Uses existing raw stats, schedule, WR Matchups and expansion
+ * sheets. Import/rebuild source models first when those change.
+ * Run refreshExpandedNFLResearch() for current context + board
+ * rebuild + validation + sync. Does not create a scheduled trigger.
+ ***************************************************************/
+function refreshExpandedNFLResearch() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(1000)) throw new Error('Another expanded research refresh is running. Try again after it finishes.');
+  const started = Date.now();
+  let stage = 'preflight';
+  try {
+    const season = Number(NFL.SEASON), week = Number(getCurrentWeek());
+    if (!Number.isInteger(season) || !Number.isInteger(week) || week < 1 || week > 18) throw new Error('Select a valid regular-season week before refreshing.');
+    const props = PropertiesService.getScriptProperties();
+    ['SUPABASE_URL','SUPABASE_ANON_KEY','NFL_RESEARCH_SYNC_TOKEN'].forEach(key => {
+      if (!props.getProperty(key)) throw new Error('Missing Script Property: '+key);
+    });
+    console.log('EXPANDED RESEARCH REFRESH START: season '+season+', week '+week);
+    const steps = [
+      ['availability and recent usage',buildPlayerAvailabilityAndUsage],
+      ['availability validation',testPlayerAvailabilityAndUsage],
+      ['Best Plays and prop boards',buildExpandedBestPlays],
+      // The sync function validates the rebuilt boards before its first request.
+      ['board validation and Supabase sync',syncExpandedNFLResearchToSupabase]
+    ];
+    steps.forEach(step => {
+      stage = step[0];
+      if (Number(NFL.SEASON) !== season || Number(getCurrentWeek()) !== week) throw new Error('Season/week changed during refresh. Run again with a stable selection.');
+      console.log('REFRESH STEP: '+stage);
+      step[1]();
+    });
+    console.log('EXPANDED RESEARCH REFRESH COMPLETE: season '+season+', week '+week+'; '+Math.round((Date.now()-started)/1000)+' seconds.');
+  } catch(e) {
+    console.log('EXPANDED RESEARCH REFRESH STOPPED during '+stage+': '+e.message);
+    throw e;
+  } finally {
+    lock.releaseLock();
+  }
+}
