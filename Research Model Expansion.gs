@@ -958,3 +958,67 @@ function testExpandedBestPlays() {
   Array.from(new Set(props.map(r => r.Market))).sort().forEach(m => console.log(m+': '+props.filter(r => r.Market === m).length+' rows'));
   console.log('EXPANDED BEST PLAYS VALIDATION COMPLETE: ATD-only main board; separate prop markets; availability labeled; no external sync.');
 }
+
+/***************************************************************
+ * EXPANDED SUPABASE SYNC
+ * Required Script Properties: SUPABASE_URL, SUPABASE_ANON_KEY,
+ * NFL_RESEARCH_SYNC_TOKEN (private writer token; never in GitHub).
+ * Run syncExpandedNFLResearchToSupabase().
+ ***************************************************************/
+function expansionSyncTeam_(team) {
+  const normalized = normalizeNFLTeam(team);
+  return normalized === 'LA' ? 'LAR' : normalized;
+}
+function expansionSyncPayload_(ss,season,week) {
+  const bestSheetRows = expansionTable_(ss,'Best Plays',['Season','Week','Player','Team','Position','Research Model','Availability','Score Basis']);
+  const metadata = new Map();
+  bestSheetRows.forEach(r => {
+    if (Number(r.Season) !== season || Number(r.Week) !== week) throw new Error('Stale Best Plays. Run buildExpandedBestPlays first.');
+    const key = r.Player+'|'+expansionSyncTeam_(r.Team);
+    if (metadata.has(key)) throw new Error('Duplicate Best Plays player '+key);
+    metadata.set(key,{position:r.Position,availability:r.Availability || 'Unverified',research_model:r['Research Model'],score_basis:r['Score Basis']});
+  });
+  const best = buildBestPlaySyncRows_(season,week).map(r => {
+    const meta = metadata.get(r.player+'|'+expansionSyncTeam_(r.team));
+    if (!meta) throw new Error('Best Plays metadata mismatch: '+r.player);
+    return Object.assign({},r,{team:expansionSyncTeam_(r.team),opponent:expansionSyncTeam_(r.opponent)},meta);
+  });
+  const gameSheet = ss.getSheetByName('Game Best Plays');
+  if (!gameSheet) throw new Error('Game Best Plays is missing. Rebuild expanded boards.');
+  const gameData = gameSheet.getDataRange().getValues();
+  const weekColumn = gameData[0].map(String).indexOf('Week');
+  if (weekColumn < 0 || gameData.slice(1).some(r => Number(r[weekColumn]) !== week)) throw new Error('Game Best Plays is stale. Rebuild expanded boards.');
+  const games = buildGameBestPlaySyncRows_(season,week).map(r => {
+    const meta = metadata.get(r.player+'|'+expansionSyncTeam_(r.player_team));
+    if (!meta) throw new Error('Game Best Plays player missing from current Best Plays: '+r.player);
+    return Object.assign({},r,{player_team:expansionSyncTeam_(r.player_team),opponent:expansionSyncTeam_(r.opponent),away_team:expansionSyncTeam_(r.away_team),home_team:expansionSyncTeam_(r.home_team)},meta);
+  });
+  const props = expansionTable_(ss,'Player Prop Research',['Season','Week','Position','Player','Team','Opponent','Market','Research Score','Availability']).map(r => {
+    if (Number(r.Season) !== season || Number(r.Week) !== week) throw new Error('Stale Player Prop Research. Rebuild expanded boards.');
+    return {season:season,week:week,position:r.Position,player:r.Player,team:expansionSyncTeam_(r.Team),opponent:expansionSyncTeam_(r.Opponent),game_id:r['Game ID'] || null,
+      market:r.Market,research_score:numExpansion_(r['Research Score']),availability:r.Availability || 'Unverified',score_basis:r['Score Basis'] || '',notes:r.Notes || ''};
+  });
+  return {season:season,week:week,best_plays:best,game_best_plays:games,player_props:props};
+}
+
+function syncExpandedNFLResearchToSupabase() {
+  testExpandedBestPlays();
+  const ss = SpreadsheetApp.getActiveSpreadsheet(),season = Number(NFL.SEASON),week = Number(getCurrentWeek());
+  const payload = expansionSyncPayload_(ss,season,week);
+  const props = PropertiesService.getScriptProperties();
+  const base = String(props.getProperty('SUPABASE_URL') || '').replace(/\/$/,'');
+  const anon = props.getProperty('SUPABASE_ANON_KEY');
+  const token = props.getProperty('NFL_RESEARCH_SYNC_TOKEN');
+  if (!base || !anon || !token) throw new Error('Required Script Properties: SUPABASE_URL, SUPABASE_ANON_KEY, NFL_RESEARCH_SYNC_TOKEN.');
+  const response = UrlFetchApp.fetch(base+'/functions/v1/atd-expanded-research-sync',{
+    method:'post',contentType:'application/json',muteHttpExceptions:true,
+    headers:{apikey:anon,Authorization:'Bearer '+anon,'x-research-sync-token':token},payload:JSON.stringify(payload)
+  });
+  const status = response.getResponseCode(), result = response.getContentText();
+  console.log('Expanded research HTTP '+status); console.log(result);
+  if (status < 200 || status >= 300) throw new Error('Expanded research sync failed: HTTP '+status+' '+result);
+  sendNFLResearchToSupabase_('defense_targets',buildDefenseTargetSyncRows_(season,week));
+  sendNFLResearchToSupabase_('wr_matchups',buildWRMatchupSyncRows_(season,week));
+  console.log('EXPANDED NFL SYNC COMPLETE: '+payload.best_plays.length+' Best Plays, '+payload.game_best_plays.length+' game plays, '+payload.player_props.length+' prop rows.');
+  ss.toast('Expanded research synced to Bet Tracker.','Complete',8);
+}
