@@ -14,6 +14,26 @@ Deno.serve(async (req: Request) => {
     for(let i=0;i<hash.length;i++) difference |= hash.charCodeAt(i)^(config.token_hash.charCodeAt(i)||0);
     if(difference!==0) return reply({error:"Invalid sync token"},401);
     const body=await req.json();
+    if(body.ou_projections!==undefined) {
+      const {season,week,ou_projections}=body;
+      if(!Number.isInteger(season)||season<2020||season>2100||!Number.isInteger(week)||week<1||week>18) return reply({error:"Invalid O/U season/week"},400);
+      const allowed=['player_pass_yds','player_pass_tds','player_rush_yds','player_reception_yds','player_receptions'];
+      if(!Array.isArray(ou_projections)||!ou_projections.length||ou_projections.length>2500) return reply({error:"Invalid O/U snapshot"},400);
+      const seen=new Set();
+      for(const r of ou_projections) {
+        if(!r||r.season!==season||r.week!==week||!['QB','RB','WR','TE'].includes(r.position)||!allowed.includes(r.market_key)||!r.player||!r.team||!r.opponent||typeof r.projection!=='number'||!Number.isFinite(r.projection)||r.projection<0||r.projection>=10000||!r.availability||!r.role||!r.model||!r.detail||typeof r.detail!=='object'||Array.isArray(r.detail)||JSON.stringify(r).length>12000) return reply({error:"Invalid O/U projection"},400);
+        const identity=r.player+'|'+r.team+'|'+r.market_key;
+        if(seen.has(identity)) return reply({error:"Duplicate O/U projection"},400);seen.add(identity);
+        if(r.quote!==null) {
+          const q=r.quote;
+          if(!q||q.bookmaker!=='draftkings'||!q.event_id||!Number.isFinite(Date.parse(q.commence_time))||typeof q.line!=='number'||!Number.isFinite(q.line)||q.line<0||q.line>=10000||[q.over_odds,q.under_odds].some(v=>typeof v!=='number'||!Number.isInteger(v)||Math.abs(v)<100)||!Number.isFinite(Date.parse(q.fetched_at))||q.last_update!==null&&!Number.isFinite(Date.parse(q.last_update))) return reply({error:"Invalid DraftKings quote"},400);
+        }
+      }
+      const stamped=ou_projections.map(r=>({...r,updated_at:new Date().toISOString()}));
+      const {data,error}=await supabase.rpc('replace_nfl_player_ou',{p_season:season,p_week:week,p_rows:stamped});
+      if(error)throw error;
+      return reply({ok:true,season,week,...data});
+    }
     const {season,week,best_plays,game_best_plays,player_props,player_details,defense_weeks}=body;
     if(!Number.isInteger(season)||season<2020||season>2100||!Number.isInteger(week)||week<1||week>18) return reply({error:"Invalid season/week"},400);
     for(const rows of [best_plays,game_best_plays,player_props]) {
