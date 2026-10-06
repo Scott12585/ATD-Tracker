@@ -4,28 +4,33 @@
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const n=v=>Number(v||0);
   const pct=v=>v==null?'—':`${(n(v)*100).toFixed(1)}%`;
-  const state={week:5,position:'WR',defenses:[],best:[],games:[],wr:[],props:[],details:[],bestPosition:'All',propPosition:'All',market:'Passing Yards'};
+  const state={week:5,position:'WR',defenses:[],best:[],games:[],wr:[],props:[],details:[],defenseWeeks:[],bestPosition:'All',propPosition:'All',market:'Passing Yards'};
   function client(){return window.atdSupabase}
   async function latestWeek(){const{data,error}=await client().from('nfl_defense_targets').select('week').eq('season',2026).order('week',{ascending:false}).limit(1);if(error)throw error;return data?.[0]?.week||5}
   async function load(){
     const sb=client(); if(!sb)return;
     state.week=await latestWeek();
-    const [d,b,g,w,p,detail]=await Promise.all([
+    const [d,b,g,w,p,detail,dw]=await Promise.all([
       sb.from('nfl_defense_targets').select('*').eq('season',2026).eq('week',state.week).order('position').order('target_rank'),
       sb.from('nfl_best_plays').select('*').eq('season',2026).eq('week',state.week).order('confidence',{ascending:false}),
       sb.from('nfl_game_best_plays').select('*').eq('season',2026).eq('week',state.week).order('game_date').order('game_time').order('play_rank'),
       sb.from('nfl_wr_matchups').select('*').eq('season',2026).eq('week',state.week).order('matchup_score',{ascending:false}),
       sb.from('nfl_player_props').select('*').eq('season',2026).eq('week',state.week).order('research_score',{ascending:false}),
-      sb.from('nfl_player_research_details').select('*').eq('season',2026).eq('week',state.week).order('player')
+      sb.from('nfl_player_research_details').select('*').eq('season',2026).eq('week',state.week).order('player'),
+      sb.from('nfl_defense_weekly_tds').select('*').eq('season',2026).eq('target_week',state.week).order('game_week')
     ]);
     for(const x of [d,b,g,w])if(x.error)throw x.error;
-    state.defenses=d.data||[];state.best=b.data||[];state.games=g.data||[];state.wr=w.data||[];state.props=p.error?[]:(p.data||[]);state.details=detail.error?[]:(detail.data||[]);
+    state.defenses=d.data||[];state.best=b.data||[];state.games=g.data||[];state.wr=w.data||[];state.props=p.error?[]:(p.data||[]);state.details=detail.error?[]:(detail.data||[]);state.defenseWeeks=dw.error?[]:(dw.data||[]);
     $('researchWeekLabel').textContent=`Week ${state.week}`;renderDefenses();renderBest();renderGames();renderWR();renderProps();renderDeepDive('RB');renderDeepDive('TE');$('researchStatus').textContent=p.error?'Prop research unavailable.':detail.error?'Production details unavailable.':'';
   }
   function renderDefenses(){
     const rows=state.defenses.filter(x=>x.position===state.position).slice(0,10);
     $('researchDefensesCount').textContent=state.position+' · top '+rows.length;
-    $('defenseTargetList').innerHTML=rows.map((x,i)=>`<button class="research-rank-row" type="button" data-defense="${esc(x.defense)}"><span class="research-rank">${i+1}</span><span class="research-team"><strong>${esc(x.defense)}</strong><small>${esc(x.position)} defense rank: ${x.defense_rank||'—'}</small></span><span class="research-metric"><strong>${n(x.td_per_game).toFixed(2)}</strong><small>TD/G allowed</small></span></button>`).join('')||'<div class="dashboard-empty">No defense data.</div>';
+    $('defenseTargetList').innerHTML=rows.map((x,i)=>{
+      const weeks=state.defenseWeeks.filter(d=>teamKey(d.defense)===teamKey(x.defense)).map(d=>({week:d.game_week,opponent:d.opponent,...d.tds}));
+      const columns=[['QB rush','qb_rush_td','QB'],['RB rush','rb_rush_td','RB'],['RB rec','rb_rec_td','RB'],['WR rec','wr_rec_td','WR'],['TE rec','te_rec_td','TE'],['QB pass','pass_td','PASS']];
+      return `<details class="research-defense-breakdown"><summary class="research-rank-row"><span class="research-rank">${i+1}</span><span class="research-team"><strong>${esc(x.defense)} <span class="research-defense-chevron" aria-hidden="true">⌄</span></strong><small>${esc(x.position)} defense rank: ${x.defense_rank||'—'} · Expand weekly TDs</small></span><span class="research-metric"><strong>${n(x.td_per_game).toFixed(2)}</strong><small>TD/G allowed</small></span></summary><div class="research-defense-weeks">${weeks.length?`<div class="research-table-wrap"><table class="research-table research-defense-table"><caption>${esc(x.defense)} touchdowns allowed by week · before Week ${state.week}</caption><thead><tr><th>Week</th><th>Opponent</th>${columns.map(([label,key,pos])=>`<th class="${pos===state.position?'defense-week-selected':''}" scope="col">${label} TD</th>`).join('')}</tr></thead><tbody>${weeks.map(w=>`<tr><th scope="row">${esc(w.week)}</th><td>${esc(w.opponent)}</td>${columns.map(([label,key,pos])=>`<td class="${pos===state.position?'defense-week-selected':''}">${fmt(w[key],0)}</td>`).join('')}</tr>`).join('')}<tr class="research-defense-total"><th scope="row">Total</th><td>${weeks.length} games</td>${columns.map(([label,key,pos])=>`<td class="${pos===state.position?'defense-week-selected':''}">${weeks.every(w=>value(w[key]))?weeks.reduce((sum,w)=>sum+Number(w[key]),0):'—'}</td>`).join('')}</tr></tbody></table></div><p class="research-note">Receiving and rushing TDs are separated by scorer position. QB pass TDs are passing production credited to quarterbacks and overlap the receiving-TD columns; do not add them together. Completed games only; bye weeks omitted. 0 means zero recorded TDs; — means incomplete data. Source: weekly player stats.</p>`:'<p class="research-note">Weekly TD history has not been synced for this defense yet.</p>'}</div></details>`;
+    }).join('')||'<div class="dashboard-empty">No defense data.</div>';
     document.querySelectorAll('.research-pos').forEach(b=>b.classList.toggle('active',b.dataset.position===state.position));
   }
   function positionOf(x){return x.position||(/^(QB|RB|TE) Anytime TD$/.exec(x.play_type||'')?.[1])||'WR'}
@@ -186,5 +191,6 @@
     $('researchSearch')?.addEventListener('input',renderWR);$('researchMinConfidence')?.addEventListener('change',renderWR);
   });
 })();
+
 
 
