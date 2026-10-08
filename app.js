@@ -63,16 +63,16 @@ function clearAutoOdds(){if(state.autoOdds!==null&&$('betOdds').value===state.au
 async function fillDraftKingsATDOdds(){
  const request=++state.oddsRequest,player=state.selectedPlayer,week=Number($('betWeek').value),season=Number(state.settings?.season||2026),source=$('betOddsSource');
  if(!player||window.atdCurrentSport&&window.atdCurrentSport!=='football')return;
- if($('twoTdToggle')?.checked){clearAutoOdds();if(source)source.textContent='Enter the 2-TD price from your bet slip.';return;}
+ const two=$('twoTdToggle')?.checked,marketLabel=two?'2+ TD':'ATD';
  if(source)source.textContent='Checking saved DraftKings odds…';
  const {data,error}=await supabase.from('nfl_atd_odds').select('*').eq('season',season).eq('week',week).eq('team',oddsTeam(player.team));
  if(request!==state.oddsRequest||state.selectedPlayer!==player)return;
- const matches=(data||[]).filter(r=>oddsNameKey(r.player)===oddsNameKey(player.name)),row=matches.length===1?matches[0]:null,q=row?.quote,now=Date.now();
- const fresh=q&&Number.isInteger(q.price)&&Math.abs(q.price)>=100&&Date.parse(q.commence_time)>now&&Number.isFinite(Date.parse(q.last_update))&&now-Date.parse(q.last_update)>=-300000&&now-Date.parse(q.last_update)<=6*3600000&&now-Date.parse(q.fetched_at)>=-300000&&now-Date.parse(q.fetched_at)<=6*3600000;
- if(error||!fresh){clearAutoOdds();if(source)source.textContent=error?'DraftKings odds could not be loaded. Enter your slip price.':'No fresh DraftKings ATD price. Refresh odds or enter your slip price.';return;}
+ const matches=(data||[]).filter(r=>oddsNameKey(r.player)===oddsNameKey(player.name)),row=matches.length===1?matches[0]:null,stored=row?.quote,q=two?stored?.two_td:(stored?.anytime||(stored?.market_key!=='player_tds_over'?stored:null)),now=Date.now();
+ const fresh=q&&(!two||q.market_key==='player_tds_over'&&q.line===1.5)&&Number.isInteger(q.price)&&Math.abs(q.price)>=100&&Date.parse(q.commence_time)>now&&Number.isFinite(Date.parse(q.last_update))&&now-Date.parse(q.last_update)>=-300000&&now-Date.parse(q.last_update)<=6*3600000&&now-Date.parse(q.fetched_at)>=-300000&&now-Date.parse(q.fetched_at)<=6*3600000;
+ if(error||!fresh){clearAutoOdds();if(source)source.textContent=error?'DraftKings odds could not be loaded. Enter your slip price.':'No fresh DraftKings '+marketLabel+' price. Refresh odds or enter your slip price.';return;}
  const field=$('betOdds'),canFill=field.value.trim()===''||state.autoOdds!==null&&field.value===state.autoOdds;
  if(canFill){field.value=odds(q.price);state.autoOdds=field.value;}
- if(source)source.textContent='DraftKings ATD '+odds(q.price)+' · updated '+dateTime(q.last_update)+(canFill?' · editable':' · your entered price kept');
+ if(source)source.textContent='DraftKings '+marketLabel+' '+odds(q.price)+' · updated '+dateTime(q.last_update)+(canFill?' · editable':' · your entered price kept');
 }
 window.atdRefreshDraftKingsOdds=async function(options={}){
  const season=Number(options.season||state.settings?.season||2026),week=Number(options.week||$('betWeek').value);
