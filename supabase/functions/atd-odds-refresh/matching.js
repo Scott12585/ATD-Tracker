@@ -37,18 +37,24 @@ function nflOUJoinQuotes_(projections,events,now) {
 }
 function nflOUATDQuotes_(players,events,season,week,now){
  const identities=new Map();players.forEach(p=>identities.set(p.player+'|'+p.team,p));
- const rows=[],seen=new Set(),ambiguous=new Set();let unmatched=0;
+ const prices=new Map(),ambiguous=new Set();let unmatched=0;
  for(const e of events){const fetched=Date.parse(e._fetched_at)||now;if(Date.parse(e.commence_time)<=fetched)continue;
   const home=nflOUTeam_(e.home_team),away=nflOUTeam_(e.away_team),book=(e.bookmakers||[]).find(b=>b.key==='draftkings');if(!book)continue;
-  for(const m of book.markets||[]){if(m.key!=='player_anytime_td')continue;
-   for(const o of m.outcomes||[]){if(o.name!=='Yes'||!o.description||!Number.isInteger(o.price)||Math.abs(o.price)<100)continue;
+  for(const m of book.markets||[]){if(!['player_anytime_td','player_tds_over'].includes(m.key))continue;
+   const two=m.key==='player_tds_over';
+   for(const o of m.outcomes||[]){if((two?(o.name!=='Over'||o.point!==1.5):o.name!=='Yes')||!o.description||!Number.isInteger(o.price)||Math.abs(o.price)<100)continue;
     const candidates=[...identities.values()].filter(p=>nflOUName_(p.player)===nflOUName_(o.description)&&[home,away].includes(p.team)&&p.opponent===(p.team===home?away:home));
-    if(candidates.length!==1){unmatched++;continue;}const p=candidates[0],id=p.player+'|'+p.team;if(seen.has(id)){ambiguous.add(id);continue;}seen.add(id);
-    rows.push({season:season,week:week,player:p.player,team:p.team,opponent:p.opponent,position:p.position,quote:{bookmaker:'draftkings',price:o.price,event_id:e.id,commence_time:e.commence_time,last_update:m.last_update||book.last_update||null,fetched_at:new Date(fetched).toISOString()},updated_at:new Date(now).toISOString()});
+    if(candidates.length!==1){unmatched++;continue;}const p=candidates[0],id=p.player+'|'+p.team+'|'+m.key;if(prices.has(id)){ambiguous.add(id);continue;}
+    prices.set(id,{player:p,quote:{bookmaker:'draftkings',market_key:m.key,...(two?{line:1.5}:{}),price:o.price,event_id:e.id,commence_time:e.commence_time,last_update:m.last_update||book.last_update||null,fetched_at:new Date(fetched).toISOString()}});
    }
   }
  }
- return {rows:rows.filter(p=>!ambiguous.has(p.player+'|'+p.team)),unmatched:unmatched};
+ const rows=new Map();
+ for(const [id,value] of prices){if(ambiguous.has(id))continue;const p=value.player,key=p.player+'|'+p.team;
+  if(!rows.has(key))rows.set(key,{season:season,week:week,player:p.player,team:p.team,opponent:p.opponent,position:p.position,quote:{},updated_at:new Date(now).toISOString()});
+  rows.get(key).quote[value.quote.market_key==='player_tds_over'?'two_td':'anytime']=value.quote;
+ }
+ return {rows:[...rows.values()].map(r=>({...r,quote:{...(r.quote.anytime||r.quote.two_td),...r.quote}})),unmatched:unmatched};
 }
 
 export {NFL_OU_MARKETS,nflOUJoinQuotes_,nflOUTeam_,nflOUName_,nflOUATDQuotes_};
