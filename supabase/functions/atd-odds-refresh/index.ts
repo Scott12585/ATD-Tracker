@@ -44,8 +44,8 @@ Deno.serve(async(req:Request)=>{
   const day=(date)=>{const parts=formatter.formatToParts(date),get=k=>parts.find(p=>p.type===k)?.value;return get('year')+'-'+get('month')+'-'+get('day');};
   const selected=events.filter(e=>Date.parse(e.commence_time)>Date.now()&&projections.some(p=>((p.team===nflOUTeam_(e.away_team)&&p.opponent===nflOUTeam_(e.home_team))||(p.team===nflOUTeam_(e.home_team)&&p.opponent===nflOUTeam_(e.away_team)))&&p.detail.game_date===day(new Date(e.commence_time))));
   if(!selected.length)throw new Error('No upcoming games match the selected research week. Saved prices were preserved.');
-  const markets=[...Object.keys(NFL_OU_MARKETS),'player_anytime_td'];
-  if(remaining!==null&&remaining<selected.length*markets.length)throw new Error('Not enough credits for a complete six-market refresh. Upgrade the plan or use the scheduled script.');
+  const markets=[...Object.keys(NFL_OU_MARKETS),'player_anytime_td','player_tds_over'];
+  if(remaining!==null&&remaining<selected.length*markets.length)throw new Error('Not enough credits for a complete seven-market refresh. Upgrade the plan or use the scheduled script.');
   const quotes=[];
   for(const event of selected){if(Date.now()-started>55000)throw new Error('Odds refresh timed out; saved prices were preserved.');const e=await provider('events/'+encodeURIComponent(event.id)+'/odds?bookmakers=draftkings&markets='+markets.join(',')+'&oddsFormat=american');e._fetched_at=new Date().toISOString();quotes.push(e);}
   const joined=nflOUJoinQuotes_(projections.map(p=>({...p,quote:null,detail:{...p.detail}})),quotes,Date.now());
@@ -53,7 +53,7 @@ Deno.serve(async(req:Request)=>{
   const atd=nflOUATDQuotes_([...identities.values()],quotes,season,week,Date.now()),pairedATD=atd.rows,unmatched=joined.unmatched+atd.unmatched;
   const {data:saved,error:saveError}=await sb.rpc('refresh_nfl_ou_quotes',{p_season:season,p_week:week,p_quotes:ou,p_atd:pairedATD});if(saveError)throw new Error('Could not save refreshed odds.');
   await sb.rpc('finish_nfl_odds_refresh',{p_id:runId,p_status:'success',p_message:'DraftKings refreshed',p_remaining:remaining});
-  return reply({ok:true,...saved,remaining,unmatched,message:'DraftKings odds refreshed.'});
+  return reply({ok:true,...saved,remaining,unmatched,two_td_prices:pairedATD.filter(r=>r.quote.two_td).length,message:'DraftKings odds refreshed.'});
  }catch(error){
   const message=error instanceof Error?error.message:'Odds refresh failed.';
   if(runId)await sb.rpc('finish_nfl_odds_refresh',{p_id:runId,p_status:'error',p_message:message,p_remaining:remaining});
