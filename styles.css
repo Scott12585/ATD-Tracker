@@ -10,3 +10,8 @@
 .hockey-swipe-pending{width:92px;border:0;background:#58758d;color:#fff;font-weight:800;font-size:14px}
 .swipe-bet:has(.hockey-swipe-pending).swiped .swipe-content{transform:translateX(-184px)}
 .dash-game-time{display:block;margin-top:3px;font-size:12px;opacity:.72;font-weight:600}
+
+/* Log Bet dollar amount */
+.money-input{display:flex;align-items:center;gap:8px;border:1px solid var(--border,#64748b);border-radius:10px;padding:0 12px;background:var(--surface,#fff)}
+.money-input>span{font-weight:700;flex:none}
+.money-input input{flex:1;min-width:0;border:0!important;box-shadow:none!important;outline:none;padding-left:0!important;background:transparent!important}
