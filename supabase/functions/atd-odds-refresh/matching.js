@@ -40,7 +40,7 @@ function nflOUATDQuotes_(players,events,season,week,now){
  const prices=new Map(),ambiguous=new Set();let unmatched=0;
  for(const e of events){const fetched=Date.parse(e._fetched_at)||now;if(Date.parse(e.commence_time)<=fetched)continue;
   const home=nflOUTeam_(e.home_team),away=nflOUTeam_(e.away_team),book=(e.bookmakers||[]).find(b=>b.key==='draftkings');if(!book)continue;
-  for(const m of book.markets||[]){if(!['player_anytime_td','player_tds_over'].includes(m.key))continue;
+  for(const m of book.markets||[]){if(!['player_anytime_td','player_tds_over','player_1st_td'].includes(m.key))continue;
    const two=m.key==='player_tds_over';
    for(const o of m.outcomes||[]){if((two?(o.name!=='Over'||o.point!==1.5):o.name!=='Yes')||!o.description||!Number.isInteger(o.price)||Math.abs(o.price)<100)continue;
     const candidates=[...identities.values()].filter(p=>nflOUName_(p.player)===nflOUName_(o.description)&&[home,away].includes(p.team)&&p.opponent===(p.team===home?away:home));
@@ -52,7 +52,7 @@ function nflOUATDQuotes_(players,events,season,week,now){
  const rows=new Map();
  for(const [id,value] of prices){if(ambiguous.has(id))continue;const p=value.player,key=p.player+'|'+p.team;
   if(!rows.has(key))rows.set(key,{season:season,week:week,player:p.player,team:p.team,opponent:p.opponent,position:p.position,quote:{},updated_at:new Date(now).toISOString()});
-  rows.get(key).quote[value.quote.market_key==='player_tds_over'?'two_td':'anytime']=value.quote;
+  rows.get(key).quote[value.quote.market_key==='player_tds_over'?'two_td':value.quote.market_key==='player_1st_td'?'first_td':'anytime']=value.quote;
  }
  return {rows:[...rows.values()].map(r=>({...r,quote:{...(r.quote.anytime||r.quote.two_td),...r.quote}})),unmatched:unmatched};
 }
