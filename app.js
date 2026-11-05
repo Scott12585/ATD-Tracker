@@ -58,7 +58,7 @@ $('bulkAddBtn')?.addEventListener('click',async()=>{
     if(!player)throw new Error('Exact player/team name not found; use the name shown in search');
     const{data:lookup,error:fnError}=await supabase.functions.invoke('atd-nfl',{body:{action:'lookupBet',week,playerName:player.name,playerId:player.playerId,season:state.settings.season,seasonType:state.settings.season_type}});
     if(fnError)throw fnError;if(lookup?.error)throw new Error(lookup.error);
-    const payload={user_id:state.user.id,week,player_name:lookup.name,player_id:lookup.playerId,team:lookup.team,opponent:lookup.opponent,game_date:lookup.gameDate,game_id:lookup.gameId,american_odds:bet.odds,stake:bet.stake,touchdown_target:bet.wagerType==='two_td'?2:1,bet_type:bet.bet_type,result:'Pending',game_status:lookup.gameStatus||'Scheduled',sport:'football'};
+    const payload={user_id:state.user.id,week,player_name:lookup.name,player_id:lookup.playerId,team:lookup.team,opponent:lookup.opponent,game_date:lookup.gameDate,game_id:lookup.gameId,american_odds:bet.odds,stake:bet.stake,touchdown_target:bet.wagerType==='two_td'?2:1,wager_type:'single',bet_type:bet.wagerType,result:'Pending',game_status:lookup.gameStatus||'Scheduled',sport:'football'};
     const{error}=await supabase.from('atd_bets').insert(payload);if(error)throw error;added++;
    }catch(err){failed.push(`${bet.name} (${bet.wagerType}): ${err.message||'failed'}`)}
   }
